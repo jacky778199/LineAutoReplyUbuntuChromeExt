@@ -1,0 +1,33 @@
+# Python virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Debug output & screenshots
+debug/
+*.png_debug
+debug_*.png
+
+# Logs
+*.log
+bot.log
+
+# Environment variables & Local secret configurations
+config.yaml
+.env
+.env.*
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE configuration
+.vscode/
+.idea/

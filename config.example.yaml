@@ -1,0 +1,45 @@
+llm:
+  # Primary LLM provider: Vertex AI / Gemini
+  primary:
+    provider: "vertex_ai"
+    project_id: "your-gcp-project-id"
+    location: "global"
+    model_name: "gemini-2.5-flash"
+  
+  # Backup LLM provider if Primary fails
+  backup:
+    provider: "openai"
+    api_key: "your-backup-openai-api-key"
+    base_url: "https://api.openai.com/v1"
+    model_name: "gpt-4o-mini"
+
+bot:
+  my_name: "YourName"
+  # 白名單聯絡人或群組名稱列表
+  whitelist:
+    - "FriendA"
+    - "WorkGroup"
+
+  # 預設系統 Prompt
+  default_system_prompt: |
+    你是我（YourName）的 LINE AI 助理。
+    請閱讀下方對話紀錄，回覆對方的最新訊息。
+    要求：
+    1. 語氣親切自然。
+    2. 如果最後一條訊息是我自己發出的，請僅回傳 "[NO_REPLY]"。
+    3. 直接輸出回覆文字內容，請勿包含引號、註解或 Markdown 區塊標記。
+
+  # 各別對象擴充 Prompt
+  contact_prompts:
+    "FriendA": |
+      這是我的好友，說話輕鬆親切帶點幽默。
+
+ui:
+  detection_mode: "hybrid" # 辨識模式: "hybrid" (推薦: 綠色色塊 248~356px + 樣板雙重判定), "color_blob" (純色塊), "template" (純樣板)
+  green_blob_min_area: 248 # 綠點色塊最小面積 (像素)
+  green_blob_max_area: 356 # 綠點色塊最大面積 (像素)
+  green_dot_confidence: 0.65
+  green_dot_template_path: "assets/green_dot_white_x.png"
+  response_delay_min: 1.5
+  response_delay_max: 3.0
+  max_retries: 3
