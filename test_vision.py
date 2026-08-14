@@ -41,7 +41,7 @@ def run_vision_test(config: dict = None):
     print("=================================================================")
 
     # 1. 測試 Python 螢幕截圖功能
-    print("\n[步驟 1/4] 測試螢幕截圖 (pyautogui.screenshot)...")
+    print("\n[步驟 1/5] 測試螢幕截圖 (pyautogui.screenshot)...")
     try:
         screenshot_pil = pyautogui.screenshot()
         screenshot_np = np.array(screenshot_pil)
@@ -59,8 +59,19 @@ def run_vision_test(config: dict = None):
         print("  - 若使用 X11 / Wayland: 請確認 DISPLAY 環境變數已設定且具有螢幕擷取權限。")
         return
 
-    # 2. 測試樣板圖片比對
-    print("\n[步驟 2/4] 掃描 assets/ 下所有樣板圖片並計算最高相似度 (Confidence)...")
+    # 2. 畫面左側 (x < 400) LINE 介面環境基準檢測
+    print("\n[步驟 2/5] 執行畫面左側 (x < 400) LINE 介面與導航基準檢測...")
+    from core.environment_validator import EnvironmentValidator
+    validator = EnvironmentValidator(left_roi_width=400, anchor_confidence_threshold=0.55)
+    env_report = validator.validate_screen(screenshot_bgr=screenshot_bgr)
+    
+    if env_report["is_valid"]:
+        print(f"  ✅ 左側環境檢測通過！在座標 {env_report['anchor_location']} 找到 LINE 導航圖示 (信心度: {env_report['anchor_score']:.2f})")
+    else:
+        print(f"  ⚠️ 左側環境檢測異常: {'; '.join(env_report['warnings'])}")
+
+    # 3. 測試樣板圖片比對
+    print("\n[步驟 3/5] 掃描 assets/ 下所有樣板圖片並計算最高相似度 (Confidence)...")
     template_files = sorted(glob.glob("assets/*.png"))
     
     if not template_files:

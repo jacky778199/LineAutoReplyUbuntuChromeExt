@@ -17,6 +17,7 @@ from core.clipboard_manager import ClipboardManager
 from core.vision_detector import GreenDotDetector
 from core.llm_service import LLMService
 from core.window_helper import LineWindowHelper
+from core.environment_validator import EnvironmentValidator
 
 # Setup default DISPLAY=:99 for Linux headless environment if not set
 if sys.platform != "win32" and "DISPLAY" not in os.environ:
@@ -94,6 +95,7 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
     logger.info("==================================================")
 
     # Initialize components
+    validator = EnvironmentValidator(left_roi_width=400, anchor_confidence_threshold=0.55)
     detector = GreenDotDetector(
         template_path=template_path,
         confidence=confidence,
@@ -105,6 +107,14 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
     clipboard = ClipboardManager()
     llm = LLMService(config)
     win_helper = LineWindowHelper()
+
+    # 0. Startup Environment Pre-flight Check (畫面左側 400px 基準檢測)
+    logger.info("🔍 [環境檢測] 正在檢查畫面左側 (x < 400) 是否為正常 LINE 介面...")
+    env_report = validator.validate_screen()
+    if env_report["is_valid"]:
+        logger.info(env_report["message"])
+    else:
+        logger.warning(env_report["message"])
 
     processed_signatures = set()
     scan_count = 0
@@ -187,6 +197,12 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                 # 印出持續掃描訊息 (每 5 次掃描/10 秒印出一次，讓使用者知道程式運作中)
                 if scan_count % 5 == 1:
                     logger.info("👀 正在持續掃描螢幕畫面，等待 LINE 新訊息綠點...（目前無未讀訊息）")
+
+                # 每 30 次掃描 (約 60 秒) 進行一次畫面左側 (x < 400) 靜態健康檢查，防止 LINE 視窗被關閉或最小化
+                if scan_count % 30 == 0:
+                    chk = validator.validate_screen()
+                    if not chk["is_valid"]:
+                        logger.warning(f"⚠️ [環境監控警告] 畫面左側 (x < 400) LINE 介面異常: {'; '.join(chk['warnings'])}")
 
             # Sleep briefly before next scan iteration
             time.sleep(2.0)
