@@ -227,14 +227,31 @@ def main():
         return
 
     if args.test_llm:
-        print("Testing LLM dual engine connection...")
+        print("\n==================================================")
+        print(" 🧪 正在獨立測試雙 LLM 引擎連線狀態...")
+        print("==================================================")
         llm = LLMService(config)
-        sample_raw_text = """
-[客戶B] [下午 2:00]
-你好，請問方便詢問專案進度嗎？
-"""
-        reply = llm.generate_reply(sample_raw_text, "客戶B")
-        print(f"Sample LLM Reply: {reply}")
+        results = llm.test_connection()
+        
+        print("\n==================================================")
+        print(" 📊 雙 LLM 連線測試總結報表")
+        print("==================================================")
+        for key in ["primary", "backup"]:
+            res = results.get(key, {})
+            name = "主要模型 (Primary)" if key == "primary" else "備用模型 (Backup)"
+            status = res.get("status", "UNKNOWN")
+            prov = res.get("provider", "")
+            
+            if status == "SUCCESS":
+                sec = res.get("duration_sec", 0)
+                reply = res.get("reply", "")
+                print(f"✅ {name}: 【{status}】 ({sec}s) - {prov}")
+                print(f"   💬 回覆範例: {reply}")
+            else:
+                err = res.get("error", "未知錯誤")
+                print(f"❌ {name}: 【{status}】 - {prov}")
+                print(f"   ⚠️ 失敗原因: {err}")
+        print("==================================================\n")
         return
 
     run_bot(config, dry_run=args.dry_run, debug=args.debug)

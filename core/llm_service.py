@@ -127,14 +127,70 @@ class LLMService:
                 return resp.text
             raise RuntimeError("Gemini / Vertex AI credentials not configured.")
 
+    def test_connection(self) -> dict:
+        """
+        Independently tests both Primary and Backup LLM models and reports results.
+        Returns a dict with test status and responses for both providers.
+        """
+        import time
+        results = {}
+        sample_prompt = "請回覆一句簡短的問候語。"
+        system_prompt = "你是一個親切的 LINE 助理。"
+
+        # 1. Test Primary LLM
+        primary_cfg = self.llm_config.get("primary", {})
+        primary_name = f"{primary_cfg.get('provider', 'vertex_ai')} ({primary_cfg.get('model_name', 'default')})"
+        logger.info(f"🧪 [1/2] 正在測試主要模型 (Primary LLM): {primary_name}...")
+        try:
+            t0 = time.time()
+            p_reply = self._call_primary_llm(system_prompt, sample_prompt)
+            duration = time.time() - t0
+            results["primary"] = {
+                "status": "SUCCESS",
+                "provider": primary_name,
+                "duration_sec": round(duration, 2),
+                "reply": p_reply.strip()
+            }
+            logger.info(f"✅ 主要模型連線成功 ({duration:.2f}s)！回覆: {p_reply.strip()[:60]}")
+        except Exception as e:
+            results["primary"] = {
+                "status": "FAILED",
+                "provider": primary_name,
+                "error": str(e)
+            }
+            logger.error(f"❌ 主要模型連線失敗: {e}")
+
+        # 2. Test Backup LLM
+        backup_cfg = self.llm_config.get("backup", {})
+        backup_name = f"{backup_cfg.get('provider', 'openai')} ({backup_cfg.get('model_name', 'default')})"
+        logger.info(f"🧪 [2/2] 正在測試備用模型 (Backup LLM): {backup_name}...")
+        try:
+            t0 = time.time()
+            b_reply = self._call_backup_llm(system_prompt, sample_prompt)
+            duration = time.time() - t0
+            results["backup"] = {
+                "status": "SUCCESS",
+                "provider": backup_name,
+                "duration_sec": round(duration, 2),
+                "reply": b_reply.strip()
+            }
+            logger.info(f"✅ 備用模型連線成功 ({duration:.2f}s)！回覆: {b_reply.strip()[:60]}")
+        except Exception as e:
+            results["backup"] = {
+                "status": "FAILED",
+                "provider": backup_name,
+                "error": str(e)
+            }
+        return results
+
     def _call_backup_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """Calls Backup LLM (OpenAI API)."""
+        """Calls Backup LLM (OpenAI / Compatible API)."""
         backup_cfg = self.llm_config.get("backup", {})
         api_key = backup_cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
         model_name = backup_cfg.get("model_name", "gpt-4o-mini")
 
         if not api_key or api_key == "YOUR_OPENAI_API_KEY":
-            raise ValueError("OpenAI API Key is missing in config or environment.")
+            raise ValueError("OpenAI / Backup API Key is missing in config or environment.")
 
         from openai import OpenAI
         client = OpenAI(api_key=api_key, base_url=backup_cfg.get("base_url"))
