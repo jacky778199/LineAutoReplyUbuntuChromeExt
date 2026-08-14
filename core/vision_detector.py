@@ -167,8 +167,8 @@ class GreenDotDetector:
             final_points = self._group_nearby_points(detected_points, min_distance=18)
             final_points.sort(key=lambda p: p[1])
 
-            # Debug logging and Visual Output
-            if self.debug or save_debug_image or (self.detection_mode == "hybrid" and (blob_matches or max_val >= 0.50)):
+            # Debug logging and Visual Output (僅在 debug 模式或明確指定 save_debug_image 時才輸出圖片)
+            if self.debug or save_debug_image:
                 self._save_debug_visualization(
                     screenshot_bgr, template, max_loc, max_val, final_points, blob_matches, offset_x, offset_y
                 )
