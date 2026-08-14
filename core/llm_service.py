@@ -105,13 +105,20 @@ class LLMService:
                 # Fallback to standard GEMINI_API_KEY environment variable
                 client = genai.Client()
 
+            # Disable automatic function calling (AFC) since we only perform text generation
+            afc_config = types.AutomaticFunctionCallingConfig(disable=True) if hasattr(types, "AutomaticFunctionCallingConfig") else None
+
+            config_params = {
+                "system_instruction": system_prompt,
+                "temperature": 0.7,
+            }
+            if afc_config:
+                config_params["automatic_function_calling"] = afc_config
+
             response = client.models.generate_content(
                 model=model_name,
                 contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=0.7,
-                )
+                config=types.GenerateContentConfig(**config_params)
             )
             return response.text if response.text else "[NO_REPLY]"
 
