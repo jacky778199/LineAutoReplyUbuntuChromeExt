@@ -12,6 +12,10 @@ import numpy as np
 import pyautogui
 import yaml
 
+# Setup default DISPLAY=:99 for Linux headless environment if not set
+if sys.platform != "win32" and "DISPLAY" not in os.environ:
+    os.environ["DISPLAY"] = ":99"
+
 
 def load_config(config_path: str = "config.yaml") -> dict:
     if os.path.exists(config_path):

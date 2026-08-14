@@ -39,14 +39,55 @@
 
 ## 🛠️ 安裝與環境準備
 
-### 1. 系統依賴安裝 (Linux / Ubuntu)
-若在 Linux 環境下運行，請先安裝剪貼簿與截圖工具：
+### 1. 系統依賴套件安裝 (Linux / Ubuntu)
+本機器人依賴圖形化 X11 介面進行影像擷取、視窗定位與剪貼簿操作。若在無實體螢幕的 Linux 伺服器 (Headless Server) 運行，請先安裝所需套件：
 ```bash
 sudo apt-get update
-sudo apt-get install -y xclip gnome-screenshot scrot xdotool x11-utils
+sudo apt-get install -y xvfb openbox x11vnc xclip gnome-screenshot scrot xdotool x11-utils
 ```
 
-### 2. 建立 Python 虛擬環境與安裝套件
+### 2. 配置 Headless 虛擬桌面背景常駐服務 (Xvfb + Openbox + VNC) 🔥
+為了確保 LINE 視窗與 Python 機器人能在 Linux 背景穩定運行，需將 **Xvfb（虛擬螢幕 :99）**、**Openbox（視窗管理器）** 與 **x11vnc（VNC 伺服器）** 設定為 Systemd 系統服務，實現**開機自啟與崩潰自動重啟**。
+
+#### (1) 建立服務設定檔
+建立 `/etc/systemd/system/xvfb-desktop.service`：
+```ini
+[Unit]
+Description=Headless Xvfb + Openbox + VNC Display Server
+After=network.target
+
+[Service]
+Type=forking
+User=dinghonjay
+Environment=DISPLAY=:99
+ExecStartPre=-/usr/bin/pkill -f "Xvfb :99"
+ExecStart=/bin/bash -c "Xvfb :99 -screen 0 1920x1080x24 -ac & sleep 1; DISPLAY=:99 openbox & sleep 1; x11vnc -display :99 -forever -shared -bg -nopw -rfbport 5900"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### (2) 啟用並啟動服務
+```bash
+# 重新載入 Systemd 設定
+sudo systemctl daemon-reload
+
+# 啟動虛擬桌面服務
+sudo systemctl start xvfb-desktop
+
+# 設定開機自動啟動
+sudo systemctl enable xvfb-desktop
+
+# 檢查運行狀態 (確認 Active: active (running))
+sudo systemctl status xvfb-desktop
+```
+
+> 💡 **遠端畫面監看 (VNC)**：
+> 服務啟動後，您可以使用任何 VNC Viewer（如 RealVNC / TightVNC）連線至伺服器的 `Port 5900`（或透過 SSH Tunnel `ssh -L 5900:localhost:5900 user@server`），即可即時觀看並操作 LINE 桌面！
+
+### 3. 建立 Python 虛擬環境與安裝套件
 ```bash
 # 建立虛擬環境
 python3 -m venv .venv
@@ -61,7 +102,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. 設定 `config.yaml`
+### 4. 設定 `config.yaml`
 複製範本檔建立您的設定檔：
 ```bash
 cp config.example.yaml config.yaml

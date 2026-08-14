@@ -18,6 +18,10 @@ from core.vision_detector import GreenDotDetector
 from core.llm_service import LLMService
 from core.window_helper import LineWindowHelper
 
+# Setup default DISPLAY=:99 for Linux headless environment if not set
+if sys.platform != "win32" and "DISPLAY" not in os.environ:
+    os.environ["DISPLAY"] = ":99"
+
 # Setup UTF-8 encoding for Windows console
 if sys.platform == "win32":
     try:
