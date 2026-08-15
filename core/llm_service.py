@@ -88,7 +88,7 @@ class LLMService:
         """Calls Primary LLM (Vertex AI / Gemini API)."""
         primary_cfg = self.llm_config.get("primary", {})
         provider = primary_cfg.get("provider", "vertex_ai")
-        model_name = primary_cfg.get("model_name", "gemini-2.0-flash-001")
+        model_name = primary_cfg.get("model_name", "gemini-3.5-flash")
 
         # Use google-genai SDK if available
         try:

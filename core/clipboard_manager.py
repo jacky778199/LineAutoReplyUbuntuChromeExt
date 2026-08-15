@@ -4,19 +4,24 @@ Handles thread-safe clipboard operations, Ctrl+A/C text extraction, and Ctrl+V m
 with multi-encoding fallback support (UTF-8, CP950/Big5, GB18030, Latin1).
 """
 
+import os
 import sys
 import time
 import logging
 import threading
 import subprocess
 import pyperclip
+
+if sys.platform != "win32" and "DISPLAY" not in os.environ:
+    os.environ["DISPLAY"] = ":99"
+
 import pyautogui
 
 logger = logging.getLogger(__name__)
 
 # Configure PyAutoGUI safety pauses
 pyautogui.PAUSE = 0.3
-pyautogui.FAILSAFE = True  # Move mouse to corner to abort script if emergency
+pyautogui.FAILSAFE = False  # Disable fail-safe in headless/background automation
 
 
 def robust_paste() -> str:

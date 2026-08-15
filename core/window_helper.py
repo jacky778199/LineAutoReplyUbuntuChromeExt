@@ -4,9 +4,14 @@ Calculates exact safe click targets to avoid opening links, images, or videos.
 Supports both Windows (pygetwindow) and Linux/X11 (xdotool / xwininfo / screen fallback).
 """
 
+import os
 import sys
 import subprocess
 import logging
+
+if sys.platform != "win32" and "DISPLAY" not in os.environ:
+    os.environ["DISPLAY"] = ":99"
+
 import pyautogui
 
 logger = logging.getLogger(__name__)

@@ -5,9 +5,14 @@ especially checking the left sidebar region (x: 0 ~ 400).
 """
 
 import os
+import sys
 import logging
 import cv2
 import numpy as np
+
+if sys.platform != "win32" and "DISPLAY" not in os.environ:
+    os.environ["DISPLAY"] = ":99"
+
 import pyautogui
 
 logger = logging.getLogger(__name__)

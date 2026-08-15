@@ -43,3 +43,25 @@ ui:
   response_delay_min: 1.5
   response_delay_max: 3.0
   max_retries: 3
+
+environment:
+  auto_recover: true             # 是否開啟自動恢復 (Chrome 崩潰/黑屏時自動拉起)
+  max_recover_attempts: 3        # 最大重試次數
+  recover_cooldown_sec: 10       # 恢復冷卻時間 (秒)
+  display: ":99"                 # X11 Display
+  chrome_bin: "google-chrome"    # Chrome 執行檔名稱或絕對路徑
+  line_extension_id: "ophjlpahpchlmihnnnihgmmeilfjmjjc"  # LINE Chrome 擴充套件 ID
+  line_email: ""                 # 登入 Email (選填)
+  line_password: ""              # 登入密碼 (可留空，或透過 LINE_PASSWORD 環境變數提供)
+  login_template_path: "assets/login_email_field.png" # 登入畫面帳號欄位樣板圖
+  login_confidence: 0.45         # 登入樣板比對相似度門檻
+  fullscreen: true               # 啟動後是否自動最大化並切換為全螢幕模式 (F11)
+
+notification:
+  enabled: true                  # 是否啟用 Telegram 截圖與文字通知
+  telegram_bot_token: "your-telegram-bot-token" # Telegram Bot Token (或由 TELEGRAM_BOT_TOKEN 環境變數提供)
+  telegram_chat_id: "your-telegram-chat-id"     # Telegram Chat ID (或由 TELEGRAM_CHAT_ID 環境變數提供)
+  verification_timeout: 90       # 手機驗證碼輸入等待時間 (秒)
+
+
+

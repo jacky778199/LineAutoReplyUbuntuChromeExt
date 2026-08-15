@@ -6,6 +6,9 @@ import os
 import sys
 import yaml
 
+if sys.platform != "win32" and "DISPLAY" not in os.environ:
+    os.environ["DISPLAY"] = ":99"
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from main import load_config

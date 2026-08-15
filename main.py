@@ -11,6 +11,11 @@ import random
 import argparse
 import logging
 import yaml
+
+# Setup default DISPLAY=:99 for Linux headless environment if not set
+if sys.platform != "win32" and "DISPLAY" not in os.environ:
+    os.environ["DISPLAY"] = ":99"
+
 import pyautogui
 
 from core.clipboard_manager import ClipboardManager
@@ -18,10 +23,8 @@ from core.vision_detector import GreenDotDetector
 from core.llm_service import LLMService
 from core.window_helper import LineWindowHelper
 from core.environment_validator import EnvironmentValidator
+from core.recovery_manager import RecoveryManager
 
-# Setup default DISPLAY=:99 for Linux headless environment if not set
-if sys.platform != "win32" and "DISPLAY" not in os.environ:
-    os.environ["DISPLAY"] = ":99"
 
 # Setup UTF-8 encoding for Windows console
 if sys.platform == "win32":
@@ -107,17 +110,29 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
     clipboard = ClipboardManager()
     llm = LLMService(config)
     win_helper = LineWindowHelper()
+    recovery_mgr = RecoveryManager(config)
 
     # 0. Startup Environment Pre-flight Check (畫面左側 400px 基準檢測)
     logger.info("🔍 [環境檢測] 正在檢查畫面左側 (x < 400) 是否為正常 LINE 介面...")
     env_report = validator.validate_screen()
     if env_report["is_valid"]:
         logger.info(env_report["message"])
+        # 啟動時主動點擊 Message_icon 切換至聊天對話分頁
+        recovery_mgr.switch_to_chat_tab()
     else:
         logger.warning(env_report["message"])
+        if recovery_mgr.auto_recover:
+            logger.info("🛠️ [啟動自動修復] 畫面異常，正在自動重啟 Chrome LINE 並就緒環境...")
+            recovered = recovery_mgr.recover_environment(validator)
+            if recovered:
+                logger.info("✅ 啟動階段環境自動恢復成功！")
+            else:
+                logger.warning("⚠️ 啟動階段環境自動恢復失敗，將持續在背景監控重試。")
+
 
     processed_signatures = set()
     scan_count = 0
+    consecutive_invalid_env = 0
 
     try:
         while True:
@@ -126,6 +141,7 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
             unread_points = detector.find_unread_dots()
 
             if unread_points:
+                consecutive_invalid_env = 0
                 logger.info(f"🎉 發現 {len(unread_points)} 個未讀訊息綠點標籤！開始處理 (FIFO 佇列)...")
 
                 for (cx, cy) in unread_points:
@@ -198,11 +214,26 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                 if scan_count % 5 == 1:
                     logger.info("👀 正在持續掃描螢幕畫面，等待 LINE 新訊息綠點...（目前無未讀訊息）")
 
-                # 每 30 次掃描 (約 60 秒) 進行一次畫面左側 (x < 400) 靜態健康檢查，防止 LINE 視窗被關閉或最小化
-                if scan_count % 30 == 0:
+                # 每 15 次掃描 (約 30 秒) 進行一次畫面左側 (x < 400) 靜態健康檢查，防止 LINE 視窗被關閉、最小化或黑畫面
+                if scan_count % 15 == 0:
                     chk = validator.validate_screen()
                     if not chk["is_valid"]:
-                        logger.warning(f"⚠️ [環境監控警告] 畫面左側 (x < 400) LINE 介面異常: {'; '.join(chk['warnings'])}")
+                        consecutive_invalid_env += 1
+                        logger.warning(
+                            f"⚠️ [環境監控警告 (連續 {consecutive_invalid_env} 次)] "
+                            f"畫面左側 (x < 400) LINE 介面異常: {'; '.join(chk['warnings'])}"
+                        )
+
+                        # 連續 2 次異常 (或黑畫面) 且開啟自動恢復時，自動觸發修復
+                        if recovery_mgr.auto_recover and (consecutive_invalid_env >= 2 or not chk.get("is_non_blank", True)):
+                            logger.info("🚨 偵測到環境持續異常或黑畫面，立即觸發自動恢復 (Auto-Recovery)...")
+                            if recovery_mgr.recover_environment(validator):
+                                logger.info("🎉 環境自動恢復完成！繼續監控綠點...")
+                                consecutive_invalid_env = 0
+                            else:
+                                logger.error("⚠️ 本次環境自動恢復未能成功，將於下個週期繼續重試。")
+                    else:
+                        consecutive_invalid_env = 0
 
             # Sleep briefly before next scan iteration
             time.sleep(2.0)
@@ -220,12 +251,45 @@ def test_vision_diagnostics(config: dict):
     run_vision_test(config)
 
 
+def test_environment_recovery(config: dict):
+    """Runs a one-shot environment recovery test."""
+    print("\n==================================================")
+    print(" 🛠️ 正在執行 Chrome LINE 環境自動恢復與全螢幕測試...")
+    print("==================================================")
+    validator = EnvironmentValidator(left_roi_width=400, anchor_confidence_threshold=0.55)
+    recovery_mgr = RecoveryManager(config)
+    success = recovery_mgr.recover_environment(validator)
+    if success:
+        print("\n✅ 環境恢復與全螢幕測試成功！")
+    else:
+        print("\n❌ 環境恢復測試失敗，請檢查日誌與 VNC 畫面。")
+    print("==================================================\n")
+
+
+def test_telegram_notification(config: dict):
+    """Tests Telegram Bot notification connection."""
+    from core.notifier import TelegramNotifier
+    print("\n==================================================")
+    print(" 📱 正在測試 Telegram Bot 連線與通知發送...")
+    print("==================================================")
+    notifier = TelegramNotifier(config)
+    res = notifier.test_connection()
+    if res.get("status") == "SUCCESS":
+        print(f"✅ Telegram 連線測試成功！Bot 名稱: @{res.get('bot_name')}")
+        print("   💬 已向您的 Telegram 帳號發送測試訊息。")
+    else:
+        print(f"❌ Telegram 連線測試失敗: {res.get('error')}")
+    print("==================================================\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="LINE Windows Desktop Auto-Reply Bot")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml file")
     parser.add_argument("--dry-run", action="store_true", help="Run without actually sending messages")
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging and image dumping")
     parser.add_argument("--test-vision", action="store_true", help="Diagnose screen capture, template matching scores & save debug images")
+    parser.add_argument("--test-recover", action="store_true", help="Test Chrome LINE extension auto-recovery, login & fullscreen")
+    parser.add_argument("--test-notify", action="store_true", help="Test Telegram Bot notification connection")
     parser.add_argument("--generate-template", action="store_true", help="Generate default green dot template image")
     parser.add_argument("--test-llm", action="store_true", help="Test LLM connection with dummy chat history")
 
@@ -237,6 +301,15 @@ def main():
         return
 
     config = load_config(args.config)
+
+    if args.test_notify:
+        test_telegram_notification(config)
+        return
+
+    if args.test_recover:
+        test_environment_recovery(config)
+        return
+
 
     if args.test_vision:
         test_vision_diagnostics(config)
@@ -275,3 +348,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

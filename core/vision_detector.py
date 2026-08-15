@@ -4,9 +4,14 @@ Uses OpenCV template matching to locate unread dots on screen.
 """
 
 import os
+import sys
 import logging
 import numpy as np
 import cv2
+
+if sys.platform != "win32" and "DISPLAY" not in os.environ:
+    os.environ["DISPLAY"] = ":99"
+
 import pyautogui
 from PIL import Image
 
