@@ -1,53 +1,63 @@
 # LINE 桌面版智慧自動回覆機器人 (LINE Auto-Reply Bot)
 
-本專案使用 Python 開發，專為 LINE 桌面版（支援 **Linux / Ubuntu Headless** 與 **Windows**）設計。採用 **未讀綠點色塊與樣板雙重視覺辨識 (HSV GreenBlob + OpenCV Template Matching)**、**畫面基線監控與無人值守自動自癒恢復 (Auto-Recovery & Fullscreen)**、**Telegram Bot 驗證碼截圖推播 (Telegram 2FA Notifier)**、**剪貼簿安全鎖與多重編碼容錯 (Robust Clipboard Manager)**、**白名單 FIFO 佇列** 以及 **Vertex AI (主) / OpenAI (備) 雙 LLM 智慧備援回覆** 架構。
+本專案使用 Python 開發，專為 LINE 桌面版（支援 **Linux / Ubuntu Headless** 與 **Windows**）設計。採用 **側邊欄與登入介面雙錨點自適應相對定位 (Dual-Anchor Relative Positioning)**、**未讀綠點色塊與樣板雙重視覺辨識 (HSV GreenBlob + OpenCV Template Matching)**、**畫面基線監控與無人值守自動自癒恢復 (Auto-Recovery & Fullscreen)**、**Telegram Bot 驗證碼截圖推播 (Telegram 2FA Notifier)**、**剪貼簿安全鎖與多重編碼容錯 (Robust Clipboard Manager)**、**白名單 FIFO 佇列** 以及 **Vertex AI (主) / OpenAI (備) 雙 LLM 智慧備援回覆** 架構。
 
 ---
 
 ## 🌟 特色亮點
 
-1. **雙重混合視覺辨識 (Hybrid Vision Detector)**：
+1. **側邊欄「雙錨點自適應相對定位」(Dual-Anchor Relative Positioning)** 🔥：
+   - **頂部錨點**：好友人形圖示 (`sidebar_friend_icon.png`)
+   - **底部錨點**：VOOM 箭頭圖示 (`sidebar_voom_icon.png`)
+   - **線性插值推算**：$Y_{\text{message}} = Y_{\text{friend}} + \frac{1}{3}(Y_{\text{voom}} - Y_{\text{friend}})$，徹底擺脫**未讀訊息紅點（Red Badge）覆蓋破壞模板**與**螢幕解析度/視窗縮放偏移**的問題。
+
+2. **登入介面雙錨點自適應定位 (Dual-Anchor Login Resolution)**：
+   - 透過 LINE Logo (`login_line_logo.png`) 與 登入按鈕 (`login_button.png`) 雙錨點插值，即使用戶已預先填寫帳號文字，依然能精確定位帳號框、密碼框與登入按鈕。
+   - 內建 **5 秒網路載入延遲適應緩衝**，確保慢速網路下登入回應與對話列表完整載入。
+
+3. **雙重混合視覺辨識 (Hybrid Vision Detector)**：
    - **HSV 綠色色塊面積過濾**：精準鎖定 LINE 專屬綠點面積（例如 `248px ~ 356px`），不受文字數字或縮放比例干擾。
    - **OpenCV 樣板比對**：支援多樣板（如 `green_dot_white_x.png`）相似度比對與信心度門檻控制。
    - 支援 `hybrid`（混合模式）、`color_blob`（純色塊模式）與 `template`（純樣板模式）。
 
-2. **畫面左側 400px 基線與黑畫面健康監控 (`EnvironmentValidator`)**：
-   - 實時監測畫面左側（x: 0 ~ 400px）是否具備 LINE 介面核心特徵（Message 圖示、搜尋列、非空白畫面）。
+4. **畫面左側 400px 基線與黑畫面健康監控 (`EnvironmentValidator`)**：
+   - 實時監測畫面左側（x: 0 ~ 400px）是否具備 LINE 介面核心特徵（好友與 VOOM 雙錨點、非空白畫面）。
    - 週期性自動排查視窗是否被最小化、關閉或異常黑畫面。
 
-3. **Chrome LINE 崩潰重啟與無人值守自癒 (`RecoveryManager`)**：
-   - 當偵測到 LINE 異常關閉或黑畫面時，自動重新拉起 Chrome LINE 擴充套件 (`--app=chrome-extension://...`)。
-   - 自動檢測登入介面並自動輸入密碼進行登入。
+5. **Chrome LINE 崩潰重啟與無人值守自癒 (`RecoveryManager`)**：
+   - 當偵測到 LINE 異常關閉或黑畫面時，自動清理重複視窗並重新拉起 Chrome LINE 擴充套件 (`--app=chrome-extension://...`)。
+   - 自動檢測登入介面並自動輸入帳號密碼完成登入。
    - 透過 `xdotool` 自動聚焦視窗並切換至全螢幕模式 (`F11`)。
-   - 啟動與恢復完成後主動點擊 `Message_icon` 切換回聊天列表。
+   - 啟動與恢復完成後主動切換回聊天列表分頁。
 
-4. **Telegram Bot 訊息推播與手機 2FA 驗證碼截圖 (`TelegramNotifier`)**：
+6. **Telegram Bot 訊息推播與手機 2FA 驗證碼截圖 (`TelegramNotifier`)**：
    - 系統異常、環境恢復成功/失敗即時推播 Telegram。
    - 當 LINE 觸發手機雙重驗證 (2FA) 出現驗證碼畫面時，自動截圖並推播至您的 Telegram，無須開啟 VNC 即可由手機輸入驗證碼完成登入。
 
-5. **全螢幕 100px 座標網格診斷系統 (`test_vision.py`)**：
+7. **全螢幕 100px 座標網格診斷系統 (`test_vision.py`)**：
    - 一鍵檢測螢幕截圖權限與解析度。
    - 自動計算畫面中所有樣板的匹配信心度與綠色色塊面積。
    - 自動生成標註圖 `debug/coordinate_grid_map.png`，覆蓋 100px 標尺與十字準星，方便精確排查與微調座標。
 
-6. **智慧安全防誤點與焦點控制 (`LineWindowHelper`)**：
-   - **`SafeChatHistory`**：動態定位至對話區域右側空白背景（92% 寬度、40% 高度），避免反白對話紀錄時誤點超連結、貼圖或圖片。
-   - **`SafeInputBox`**：精確鎖定底部輸入框中心。
+8. **三重防護純白背景安全點擊與自癒防禦 (Safe Click Protection A+B+C)**：
+   - **方案 A（動態視覺純白安全區辨識）**：以 OpenCV 掃描對話區塊，動態尋找 $20 \times 20$ 像素之 100% 純白無文字/無連結空白區（RGB $\ge 245$、無藍色偏向、無邊緣線條），確保點擊取得焦點時絕不誤觸超連結或圖片。
+   - **方案 B（結構性安全邊界錨點備援）**：若視覺搜尋未果，自動降級至右側極限邊距間隙（Gutter 95% 寬度）與標題列安全錨點。
+   - **方案 C（外部分頁誤開防禦與輕量自癒）**：若因任何外部原因開啟新分頁，自動發送 `Ctrl + W` 與 `ESC` 關閉外部分頁並即刻重新聚焦 LINE，無須花費 10 秒重啟瀏覽器。
    - **自動解除焦點 (`unfocus_chat_room`)**：每次處理完畢（或跳過非白名單）自動點擊 Message Icon 並按下 `ESC` 切回聊天列表，確保後續新訊息能正常產生綠點。
 
-7. **多重編碼容錯剪貼簿 (`ClipboardManager`)**：
+9. **多重編碼容錯剪貼簿 (`ClipboardManager`)**：
    - 支援 UTF-8、Big5 / CP950（繁體中文）、GB18030、Latin-1 自動轉碼，解決 Linux / `xclip` 下的 `UnicodeDecodeError`。
    - 內建 `threading.Lock()` 確保對話複製與訊息貼上不發生競爭衝突。
 
-8. **多好友獨立 Persona (客製 Prompt) 與雙 LLM 自動備援**：
-   - **主模型**：Google Vertex AI / Gemini (`gemini-2.5-flash` / `gemini-3.5-flash`)
-   - **備用模型**：OpenAI API (`gpt-4o-mini` / 相容模型)
-   - 當主模型配額不足 (429) 或連線超時時，自動無縫切換至備用模型。
-   - 支援針對不同好友或群組設定專屬 Prompt（如語氣設定、繁簡中文、泰文/英文回應等）。
+10. **多好友獨立 Persona (客製 Prompt) 與雙 LLM 自動備援**：
+    - **主模型**：Google Vertex AI / Gemini (`gemini-2.5-flash` / `gemini-3.5-flash`)
+    - **備用模型**：OpenAI API (`gpt-4o-mini` / 相容模型)
+    - 當主模型配額不足 (429) 或連線超時時，自動無縫切換至備用模型。
+    - 支援針對不同好友或群組設定專屬 Prompt（如語氣設定、繁簡中文、泰文/英文回應等）。
 
-9. **防重複與人模人樣防封禁**：
-   - 內建最近 100 筆對話內容雜湊簽章防重複發送。
-   - 隨機模擬打字延遲發送機制。
+11. **防重複與人模人樣防封禁**：
+    - 內建最近 100 筆對話內容雜湊簽章防重複發送。
+    - 隨機模擬打字延遲發送機制。
 
 ---
 
@@ -182,17 +192,17 @@ python main.py --debug
 
 ```text
 AutoReplyMessage/
-├── assets/                  # 視覺辨識樣板圖片 (Message_icon.png, green_dot_*.png, login_email_field.png)
+├── assets/                  # 視覺辨識樣板圖片 (sidebar_friend_icon.png, sidebar_voom_icon.png, login_*.png, green_dot_*.png)
 ├── core/
 │   ├── clipboard_manager.py # 多編碼安全剪貼簿管理器 (xclip / pyperclip / Lock)
-│   ├── environment_validator.py # 螢幕左側 400px 基線與黑畫面檢測
+│   ├── environment_validator.py # 螢幕左側 400px 基線與側邊欄雙錨點檢測
 │   ├── notifier.py          # Telegram Bot 訊息與 2FA 驗證碼截圖推播通知
-│   ├── recovery_manager.py  # Chrome LINE 崩潰重啟、自動密碼登入、手機驗證碼推播、視窗全螢幕 (F11)
+│   ├── recovery_manager.py  # Chrome LINE 崩潰重啟、雙錨點自動登入、手機驗證碼推播、視窗全螢幕 (F11)
 │   ├── llm_service.py       # 雙 LLM 引擎 (Vertex AI 主 / OpenAI 備援)
-│   ├── vision_detector.py   # HSV 色塊過濾 + 樣板比對 + 100px 座標網格生成器
+│   ├── vision_detector.py   # 側邊欄雙錨點插值 + HSV 色塊過濾 + 樣板比對 + 座標網格生成
 │   └── window_helper.py     # 視窗幾何計算、SafeChatHistory、SafeInputBox、解除焦點
 ├── debug/                   # 自動生成的偵錯截圖與座標網格圖 (已被 .gitignore 忽略)
-├── tests/                   # 單元測試 (Telegram 通知、環境恢復、剪貼簿線程安全、設定檔格式)
+├── tests/                   # 單元測試 (Telegram 通知、環境恢復/雙錨點、安全點擊、剪貼簿線程安全、設定檔格式)
 ├── config.example.yaml      # 設定檔安全範本
 ├── main.py                  # 機器人主入口程式 (支援自動環境恢復與監控)
 ├── test_vision.py           # 獨立影像辨識與座標診斷測試工具
@@ -204,10 +214,11 @@ AutoReplyMessage/
 
 ## 🧪 單元測試
 
-執行內建單元測試以驗證 Telegram 通知、環境恢復、設定檔解析與剪貼簿線程安全：
+執行內建單元測試以驗證 Telegram 通知、環境恢復與雙錨點插值、安全點擊、設定檔解析與剪貼簿線程安全：
 ```bash
 python tests/test_notifier.py
 python tests/test_recovery.py
+python tests/test_safe_click.py
 python tests/test_config.py
 python tests/test_clipboard.py
 ```

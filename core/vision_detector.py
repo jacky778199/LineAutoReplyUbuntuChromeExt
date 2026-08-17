@@ -331,40 +331,244 @@ class GreenDotDetector:
                 grouped.append(p)
         return grouped
 
-    def find_message_icon(self, template_path: str = "assets/Message_icon.png", confidence: float = 0.60, region=None) -> tuple:
+    def find_message_icon(
+        self,
+        template_path: str = "assets/Message_icon.png",
+        friend_template_path: str = "assets/sidebar_friend_icon.png",
+        voom_template_path: str = "assets/sidebar_voom_icon.png",
+        confidence: float = 0.60,
+        region=None,
+        screenshot_bgr: np.ndarray = None
+    ) -> tuple:
         """
-        Locates the Message_icon.png on screen using OpenCV template matching.
-        Returns (center_x, center_y) tuple if found, else None.
+        Locates the Message tab icon on screen using dual-anchor relative positioning
+        (Friend Icon + VOOM Icon interpolation), with fallback to direct template matching.
+        This provides complete resistance against unread red badges and window scaling.
         """
-        if not os.path.exists(template_path):
-            logger.warning(f"Message icon template '{template_path}' not found.")
-            return None
-
         try:
-            screenshot_bgr, _ = self.capture_screen(region=region)
+            # Capture full or sidebar region if not provided
+            if screenshot_bgr is None:
+                screenshot_bgr, _ = self.capture_screen(region=region)
             if screenshot_bgr is None:
                 return None
 
-            template = cv2.imread(template_path, cv2.IMREAD_COLOR)
-            if template is None:
-                logger.error(f"Failed to read message icon template from '{template_path}'.")
-                return None
+            s_h, s_w = screenshot_bgr.shape[:2]
+            offset_x = region[0] if region else 0
+            offset_y = region[1] if region else 0
 
-            t_h, t_w = template.shape[:2]
-            res = cv2.matchTemplate(screenshot_bgr, template, cv2.TM_CCOEFF_NORMED)
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+            # 1. Dual-Anchor Strategy: Friend (top) + VOOM (bottom)
+            friend_pos = None
+            voom_pos = None
 
-            if max_val >= confidence:
-                offset_x = region[0] if region else 0
-                offset_y = region[1] if region else 0
-                center_x = max_loc[0] + t_w // 2 + offset_x
-                center_y = max_loc[1] + t_h // 2 + offset_y
-                logger.info(f"🎯 [影像辨識] 成功比對找到 Message_icon.png 於座標 ({center_x}, {center_y})，信心度: {max_val:.2f}")
+            if os.path.exists(friend_template_path):
+                f_tpl = cv2.imread(friend_template_path, cv2.IMREAD_COLOR)
+                if f_tpl is not None:
+                    fh, fw = f_tpl.shape[:2]
+                    top_roi = screenshot_bgr[:min(180, s_h), :min(80, s_w)]
+                    if top_roi.shape[0] >= fh and top_roi.shape[1] >= fw:
+                        res_f = cv2.matchTemplate(top_roi, f_tpl, cv2.TM_CCOEFF_NORMED)
+                        _, f_max, _, f_loc = cv2.minMaxLoc(res_f)
+                        if f_max >= confidence:
+                            friend_pos = (f_loc[0] + fw // 2 + offset_x, f_loc[1] + fh // 2 + offset_y)
+
+            if os.path.exists(voom_template_path):
+                v_tpl = cv2.imread(voom_template_path, cv2.IMREAD_COLOR)
+                if v_tpl is not None:
+                    vh, vw = v_tpl.shape[:2]
+                    bot_roi_y1 = 120
+                    bot_roi = screenshot_bgr[bot_roi_y1:min(350, s_h), :min(80, s_w)]
+                    if bot_roi.shape[0] >= vh and bot_roi.shape[1] >= vw:
+                        res_v = cv2.matchTemplate(bot_roi, v_tpl, cv2.TM_CCOEFF_NORMED)
+                        _, v_max, _, v_loc = cv2.minMaxLoc(res_v)
+                        if v_max >= confidence:
+                            voom_pos = (v_loc[0] + vw // 2 + offset_x, bot_roi_y1 + v_loc[1] + vh // 2 + offset_y)
+
+            # A. Dual Anchor Resolution
+            if friend_pos and voom_pos:
+                center_x = int((friend_pos[0] + voom_pos[0]) / 2)
+                center_y = int(friend_pos[1] + (voom_pos[1] - friend_pos[1]) * (1.0 / 3.0))
+                logger.info(f"🎯 [雙錨點定位] 成功透過好友 ({friend_pos}) 與 VOOM ({voom_pos}) 插值定位訊息分頁座標: ({center_x}, {center_y})")
                 return (center_x, center_y)
-            else:
-                logger.warning(f"Message_icon.png 未達信心度門檻 (最高信心度: {max_val:.2f} < 門檻 {confidence})")
-                return None
-        except Exception as e:
-            logger.error(f"Error matching Message_icon.png: {e}")
+
+            # B. Single Friend Anchor Offset
+            if friend_pos:
+                center_x = friend_pos[0]
+                center_y = int(friend_pos[1] + 53)
+                logger.info(f"🎯 [單錨點定位] 成功透過好友錨點 ({friend_pos}) 推算訊息分頁座標: ({center_x}, {center_y})")
+                return (center_x, center_y)
+
+            # C. Fallback: Direct Message_icon.png template matching
+            if os.path.exists(template_path):
+                template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+                if template is not None:
+                    t_h, t_w = template.shape[:2]
+                    sidebar_roi = screenshot_bgr[:min(250, s_h), :min(80, s_w)]
+                    if sidebar_roi.shape[0] >= t_h and sidebar_roi.shape[1] >= t_w:
+                        res = cv2.matchTemplate(sidebar_roi, template, cv2.TM_CCOEFF_NORMED)
+                        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                        center_x = max_loc[0] + t_w // 2 + offset_x
+                        center_y = max_loc[1] + t_h // 2 + offset_y
+                        if max_val >= confidence and center_x <= 80 and 35 <= center_y <= 200:
+                            logger.info(f"🎯 [備援樣板比對] 成功比對到 Message_icon.png 於座標 ({center_x}, {center_y})，信心度: {max_val:.2f}")
+                            return (center_x, center_y)
+
+            logger.warning(f"⚠️ [側邊欄錨點掃描] 未能找到足夠錨點定位訊息分頁 (Friend={friend_pos}, VOOM={voom_pos})")
             return None
+        except Exception as e:
+            logger.error(f"Error matching Message tab anchors: {e}")
+            return None
+
+    def find_safe_white_background_spot(
+        self,
+        search_region: tuple = None,
+        preferred_pos: tuple = None,
+        patch_size: tuple = (20, 20),
+        min_brightness: int = 245,
+        max_std_dev: float = 8.0,
+        screenshot_bgr: np.ndarray = None,
+        save_debug: bool = False
+    ) -> tuple:
+        """
+        Dynamically locates a safe, pure white/blank background spot in the chat area
+        to focus the chat pane without accidentally clicking hyperlinks, images, cards, or text.
+
+        Args:
+            search_region: (left, top, width, height) bounding box to search within.
+            preferred_pos: (x, y) starting candidate point to verify first.
+            patch_size: (width, height) required continuous blank area (default: 20x20 px).
+            min_brightness: Minimum average grayscale brightness (default: 245 for near-pure white).
+            max_std_dev: Maximum standard deviation across the patch to reject edges/text.
+            screenshot_bgr: Optional pre-captured BGR screenshot image.
+            save_debug: If True, saves visual debug image to debug/safe_white_spot.png.
+
+        Returns:
+            (safe_x, safe_y) absolute coordinates of the safe spot's center, or None if not found.
+        """
+        try:
+            if screenshot_bgr is None:
+                screenshot_bgr, _ = self.capture_screen()
+                if screenshot_bgr is None:
+                    return None
+
+            img_h, img_w = screenshot_bgr.shape[:2]
+            pw, ph = patch_size
+            half_pw = pw // 2
+            half_ph = ph // 2
+
+            def is_safe_white_patch(cx: int, cy: int) -> bool:
+                x1 = cx - half_pw
+                y1 = cy - half_ph
+                x2 = x1 + pw
+                y2 = y1 + ph
+
+                if x1 < 0 or y1 < 0 or x2 > img_w or y2 > img_h:
+                    return False
+
+                patch = screenshot_bgr[y1:y2, x1:x2]
+                if patch.shape[0] != ph or patch.shape[1] != pw:
+                    return False
+
+                # 1. Grayscale brightness and standard deviation check
+                gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+                mean_val = float(np.mean(gray))
+                std_val = float(np.std(gray))
+                min_val = int(np.min(gray))
+
+                if mean_val < min_brightness or std_val > max_std_dev or min_val < (min_brightness - 20):
+                    return False
+
+                # 2. Blue link bias check (in BGR: blue channel 0, red channel 2)
+                b_channel = patch[:, :, 0].astype(np.int16)
+                r_channel = patch[:, :, 2].astype(np.int16)
+                max_blue_bias = int(np.max(b_channel - r_channel))
+                if max_blue_bias > 15:  # Reject patches containing blue hyperlinks
+                    return False
+
+                # 3. Edge/Texture variance check (Reject text contours or image borders)
+                lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+                if lap_var > 30.0:
+                    return False
+
+                return True
+
+            # 1. Check preferred position first if provided
+            if preferred_pos:
+                pref_x, pref_y = preferred_pos
+                if is_safe_white_patch(pref_x, pref_y):
+                    logger.debug(f"Preferred safe position ({pref_x}, {pref_y}) validated as pure white background.")
+                    if save_debug or self.debug:
+                        self._save_safe_spot_debug(screenshot_bgr, (pref_x, pref_y), patch_size, search_region)
+                    return (pref_x, pref_y)
+
+            # 2. Determine search bounding box
+            if search_region:
+                rx, ry, rw, rh = search_region
+            else:
+                # Default search: right side of the screen
+                rx = int(img_w * 0.70)
+                ry = int(img_h * 0.15)
+                rw = int(img_w * 0.28)
+                rh = int(img_h * 0.70)
+
+            # Clip search bounding box to image boundaries
+            rx = max(half_pw, min(rx, img_w - half_pw))
+            ry = max(half_ph, min(ry, img_h - half_ph))
+            rw = min(rw, img_w - rx - half_pw)
+            rh = min(rh, img_h - ry - half_ph)
+
+            if rw <= 0 or rh <= 0:
+                logger.warning("Safe white background search region is invalid or out of screen.")
+                return None
+
+            # 3. Grid scan: Prioritize rightmost column to leftmost, and top to bottom
+            step_x = 15
+            step_y = 15
+            x_candidates = list(range(rx + rw - 1, rx, -step_x))
+            y_candidates = list(range(ry, ry + rh, step_y))
+
+            for cx in x_candidates:
+                for cy in y_candidates:
+                    if is_safe_white_patch(cx, cy):
+                        logger.info(f"🎯 [純白安全區偵測成功] 於座標 ({cx}, {cy}) 找到符合標準的純白無連結背景區！")
+                        if save_debug or self.debug:
+                            self._save_safe_spot_debug(screenshot_bgr, (cx, cy), patch_size, search_region)
+                        return (cx, cy)
+
+            logger.warning("⚠️ [純白安全區偵測] 搜尋區域內未找到足夠尺寸的純白無文字背景區塊。")
+            if save_debug or self.debug:
+                self._save_safe_spot_debug(screenshot_bgr, None, patch_size, search_region)
+            return None
+
+        except Exception as e:
+            logger.error(f"Error finding safe white background spot: {e}", exc_info=True)
+            return None
+
+    def _save_safe_spot_debug(self, screenshot_bgr: np.ndarray, safe_spot: tuple, patch_size: tuple, search_region: tuple):
+        """Saves annotated debug image illustrating safe white patch detection result."""
+        try:
+            os.makedirs("debug", exist_ok=True)
+            dbg = screenshot_bgr.copy()
+            pw, ph = patch_size
+
+            # Draw search region boundary in blue
+            if search_region:
+                rx, ry, rw, rh = search_region
+                cv2.rectangle(dbg, (rx, ry), (rx + rw, ry + rh), (255, 165, 0), 2)
+                cv2.putText(dbg, "Safe Search ROI", (rx + 5, max(20, ry - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+
+            # Draw detected safe spot in bright green
+            if safe_spot:
+                sx, sy = safe_spot
+                x1, y1 = sx - pw // 2, sy - ph // 2
+                x2, y2 = x1 + pw, y1 + ph
+                cv2.rectangle(dbg, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.circle(dbg, (sx, sy), 4, (0, 0, 255), -1)
+                cv2.putText(dbg, f"SAFE SPOT ({sx},{sy})", (sx - 40, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+            out_path = "debug/safe_white_spot.png"
+            cv2.imwrite(out_path, dbg)
+            logger.debug(f"Safe spot debug image saved to '{out_path}'.")
+        except Exception as e:
+            logger.debug(f"Failed to save safe spot debug image: {e}")
+
 

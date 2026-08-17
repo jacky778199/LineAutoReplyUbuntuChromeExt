@@ -72,21 +72,46 @@ class LineWindowHelper:
 
         return None
 
-    def get_safe_chat_history_click_pos(self) -> tuple:
+    def get_safe_chat_history_click_pos(self, detector=None) -> tuple:
         """
         Returns (x, y) coordinates for a SAFE blank space inside the chat history area.
-        Uses the far-right margin background (92% width, 40% height) to avoid clicking message bubbles, links, videos or images.
+        Combines:
+        1. Scheme A: Vision-based White Background Spot Finder (if detector is provided).
+        2. Scheme B: Structural safe margin / gutter coordinates fallback (95% width, 35% height).
         """
         win = self.get_line_window()
         if not win:
             logger.warning("LINE window not found. Falling back to default screen ratio.")
+            if detector:
+                safe_spot = detector.find_safe_white_background_spot()
+                if safe_spot:
+                    return safe_spot
             return (850, 350)
 
-        # Far right margin background of the chat pane
-        safe_x = int(win.left + win.width * 0.92)
-        safe_y = int(win.top + win.height * 0.40)
-        logger.info(f"Calculated safe chat history focus coordinate: ({safe_x}, {safe_y})")
-        return (safe_x, safe_y)
+        # Calculate search bounding box on the right side of the chat pane (x: 72%~96%, y: 20%~75%)
+        search_x = int(win.left + win.width * 0.72)
+        search_y = int(win.top + win.height * 0.20)
+        search_w = int(win.width * 0.24)
+        search_h = int(win.height * 0.55)
+        search_region = (search_x, search_y, search_w, search_h)
+
+        # Structural safe margin position (far-right margin gutter, avoiding bubbles)
+        fallback_safe_x = int(win.left + win.width * 0.95)
+        fallback_safe_y = int(win.top + win.height * 0.35)
+
+        if detector:
+            safe_spot = detector.find_safe_white_background_spot(
+                search_region=search_region,
+                preferred_pos=(fallback_safe_x, fallback_safe_y)
+            )
+            if safe_spot:
+                logger.info(f"🎯 [純白安全點] 視覺動態鎖定純白背景座標: {safe_spot}")
+                return safe_spot
+            else:
+                logger.warning("⚠️ [純白安全點] 視覺辨識未找到足夠純白區塊，採用結構性安全邊界備援。")
+
+        logger.info(f"Using structural safe chat history coordinate: ({fallback_safe_x}, {fallback_safe_y})")
+        return (fallback_safe_x, fallback_safe_y)
 
     def get_input_box_click_pos(self) -> tuple:
         """
@@ -111,7 +136,7 @@ class LineWindowHelper:
 
         icon_pos = None
         if detector:
-            icon_pos = detector.find_message_icon(template_path="assets/Message_icon.png", confidence=0.55)
+            icon_pos = detector.find_message_icon(template_path="assets/Message_icon.png", confidence=0.65)
 
         win = self.get_line_window()
 
@@ -120,14 +145,15 @@ class LineWindowHelper:
             logger.info(f"🎯 [圖案比對成功] 點擊 Message_icon.png 座標 ({click_x}, {click_y}) + 按下 ESC...")
         elif win:
             click_x = int(win.left + 30)
-            click_y = int(win.top + 45)
-            logger.info(f"Unfocusing active chat room (比例備用算法): 點擊 ({click_x}, {click_y}) + 按下 ESC...")
+            click_y = int(win.top + 89)
+            logger.info(f"Unfocusing active chat room (側邊欄備用座標): 點擊 ({click_x}, {click_y}) + 按下 ESC...")
         else:
             logger.warning("LINE window not found. Skipping unfocus action.")
             return
 
         pyautogui.click(click_x, click_y)
-        time.sleep(0.3)
+        logger.info("⏳ 點擊 Message 分頁後等待 5 秒 (確保對話列表載入完成)...")
+        time.sleep(5.0)
         pyautogui.press('escape')
         time.sleep(0.3)
 

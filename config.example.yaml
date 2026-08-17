@@ -53,7 +53,9 @@ environment:
   line_extension_id: "ophjlpahpchlmihnnnihgmmeilfjmjjc"  # LINE Chrome 擴充套件 ID
   line_email: ""                 # 登入 Email (選填)
   line_password: ""              # 登入密碼 (可留空，或透過 LINE_PASSWORD 環境變數提供)
-  login_template_path: "assets/login_email_field.png" # 登入畫面帳號欄位樣板圖
+  login_logo_template_path: "assets/login_line_logo.png" # 登入畫面 LINE Logo 不變錨點樣板圖
+  login_button_template_path: "assets/login_button.png"  # 登入畫面 Log in 按鈕樣板圖
+  login_template_path: "assets/login_email_field.png" # 登入畫面帳號欄位樣板圖 (備用)
   login_confidence: 0.45         # 登入樣板比對相似度門檻
   fullscreen: true               # 啟動後是否自動最大化並切換為全螢幕模式 (F11)
 

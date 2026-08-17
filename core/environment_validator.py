@@ -23,11 +23,15 @@ class EnvironmentValidator:
 
     def __init__(
         self,
-        anchor_template_path: str = "assets/Message_icon.png",
+        anchor_template_path: str = "assets/sidebar_friend_icon.png",
+        bottom_anchor_template_path: str = "assets/sidebar_voom_icon.png",
+        fallback_anchor_template_path: str = "assets/Message_icon.png",
         left_roi_width: int = 400,
         anchor_confidence_threshold: float = 0.55
     ):
         self.anchor_template_path = anchor_template_path
+        self.bottom_anchor_template_path = bottom_anchor_template_path
+        self.fallback_anchor_template_path = fallback_anchor_template_path
         self.left_roi_width = left_roi_width
         self.anchor_confidence_threshold = anchor_confidence_threshold
 
@@ -36,7 +40,7 @@ class EnvironmentValidator:
         Runs comprehensive checks on the current screen:
         1. Screen capture & resolution readiness
         2. Blank / Black screen check
-        3. Left ROI (x: 0 ~ left_roi_width) LINE UI anchor detection
+        3. Left ROI (x: 0 ~ left_roi_width) LINE UI sidebar dual-anchor detection
         
         Returns:
             dict containing overall status (is_valid: bool), sub-check details, and diagnostics message.
@@ -48,6 +52,9 @@ class EnvironmentValidator:
             "anchor_found": False,
             "anchor_score": 0.0,
             "anchor_location": None,
+            "anchor_type": None,
+            "friend_location": None,
+            "voom_location": None,
             "left_roi_width": self.left_roi_width,
             "warnings": [],
             "message": ""
@@ -84,37 +91,90 @@ class EnvironmentValidator:
         else:
             report["is_non_blank"] = True
 
-        # 3. Check Left Region (x: 0 ~ left_roi_width) for LINE UI Anchor (Message_icon.png)
+        # 3. Check Left Region for LINE UI Sidebar Anchors (Friend Icon + VOOM Icon)
         left_roi_w = min(self.left_roi_width, s_w)
         left_roi = screenshot_bgr[:, :left_roi_w]
 
+        friend_found = False
+        friend_pos = None
+        friend_score = 0.0
+        voom_found = False
+        voom_pos = None
+        voom_score = 0.0
+
+        # A. Detect Friend Icon (Top Anchor)
         if os.path.exists(self.anchor_template_path):
-            anchor_tpl = cv2.imread(self.anchor_template_path, cv2.IMREAD_COLOR)
-            if anchor_tpl is not None:
-                t_h, t_w = anchor_tpl.shape[:2]
-                res = cv2.matchTemplate(left_roi, anchor_tpl, cv2.TM_CCOEFF_NORMED)
-                min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+            f_tpl = cv2.imread(self.anchor_template_path, cv2.IMREAD_COLOR)
+            if f_tpl is not None:
+                th, tw = f_tpl.shape[:2]
+                top_roi = left_roi[:min(180, s_h), :min(80, left_roi_w)]
+                if top_roi.shape[0] >= th and top_roi.shape[1] >= tw:
+                    res_f = cv2.matchTemplate(top_roi, f_tpl, cv2.TM_CCOEFF_NORMED)
+                    _, f_max, _, f_loc = cv2.minMaxLoc(res_f)
+                    friend_score = float(f_max)
+                    friend_pos = (f_loc[0] + tw // 2, f_loc[1] + th // 2)
+                    if friend_score >= self.anchor_confidence_threshold and friend_pos[0] <= 80 and 15 <= friend_pos[1] <= 100:
+                        friend_found = True
+                        report["friend_location"] = friend_pos
 
-                report["anchor_score"] = round(float(max_val), 4)
-                report["anchor_location"] = (max_loc[0] + t_w // 2, max_loc[1] + t_h // 2)
+        # B. Detect VOOM Icon (Bottom Anchor)
+        if os.path.exists(self.bottom_anchor_template_path):
+            v_tpl = cv2.imread(self.bottom_anchor_template_path, cv2.IMREAD_COLOR)
+            if v_tpl is not None:
+                th, tw = v_tpl.shape[:2]
+                bot_roi_y1 = 120
+                bot_roi = left_roi[bot_roi_y1:min(350, s_h), :min(80, left_roi_w)]
+                if bot_roi.shape[0] >= th and bot_roi.shape[1] >= tw:
+                    res_v = cv2.matchTemplate(bot_roi, v_tpl, cv2.TM_CCOEFF_NORMED)
+                    _, v_max, _, v_loc = cv2.minMaxLoc(res_v)
+                    voom_score = float(v_max)
+                    voom_pos = (v_loc[0] + tw // 2, bot_roi_y1 + v_loc[1] + th // 2)
+                    if voom_score >= self.anchor_confidence_threshold and voom_pos[0] <= 80 and 140 <= voom_pos[1] <= 300:
+                        voom_found = True
+                        report["voom_location"] = voom_pos
 
-                if max_val >= self.anchor_confidence_threshold:
-                    report["anchor_found"] = True
-                else:
-                    report["is_valid"] = False
-                    report["warnings"].append(
-                        f"畫面左側 (x < {left_roi_w}) 未找到 LINE 導航圖示 (最高相似度 {max_val:.2f} < 門檻 {self.anchor_confidence_threshold})"
-                    )
-            else:
-                report["warnings"].append(f"無法載入基準樣板圖片: {self.anchor_template_path}")
+        # C. Coordinate Resolution (Dual-Anchor Interpolation > Single Friend Anchor > Fallback)
+        if friend_found and voom_found:
+            msg_x = int((friend_pos[0] + voom_pos[0]) / 2)
+            msg_y = int(friend_pos[1] + (voom_pos[1] - friend_pos[1]) * (1.0 / 3.0))
+            report["anchor_found"] = True
+            report["anchor_type"] = "dual_anchor"
+            report["anchor_score"] = round(min(friend_score, voom_score), 4)
+            report["anchor_location"] = (msg_x, msg_y)
+        elif friend_found:
+            msg_x = friend_pos[0]
+            msg_y = int(friend_pos[1] + 53)
+            report["anchor_found"] = True
+            report["anchor_type"] = "friend_single_anchor"
+            report["anchor_score"] = round(friend_score, 4)
+            report["anchor_location"] = (msg_x, msg_y)
         else:
-            report["warnings"].append(f"找不到基準樣板圖片檔案: {self.anchor_template_path}")
+            # Fallback to direct Message_icon.png template matching
+            if os.path.exists(self.fallback_anchor_template_path):
+                msg_tpl = cv2.imread(self.fallback_anchor_template_path, cv2.IMREAD_COLOR)
+                if msg_tpl is not None:
+                    t_h, t_w = msg_tpl.shape[:2]
+                    res = cv2.matchTemplate(left_roi, msg_tpl, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                    anchor_x = max_loc[0] + t_w // 2
+                    anchor_y = max_loc[1] + t_h // 2
+                    report["anchor_score"] = round(float(max_val), 4)
+                    report["anchor_location"] = (anchor_x, anchor_y)
+                    if max_val >= self.anchor_confidence_threshold and anchor_x <= 80 and 35 <= anchor_y <= 200:
+                        report["anchor_found"] = True
+                        report["anchor_type"] = "message_fallback"
+
+            if not report["anchor_found"]:
+                report["is_valid"] = False
+                report["warnings"].append(
+                    f"畫面左側未找到 LINE 側邊欄錨點 (好友最高分: {friend_score:.2f}, VOOM最高分: {voom_score:.2f} < 門檻 {self.anchor_confidence_threshold})"
+                )
 
         # Construct final diagnostic message
         if report["is_valid"]:
             report["message"] = (
-                f"✅ [環境檢測正常] 解析度: {s_w}x{s_h} | 左側 (x<{left_roi_w}) LINE 介面定位成功 "
-                f"(圖標座標: {report['anchor_location']}, 信心度: {report['anchor_score']:.2f})"
+                f"✅ [環境檢測正常] 解析度: {s_w}x{s_h} | 左側側邊欄雙錨點定位成功 "
+                f"(模式: {report['anchor_type']}, 訊息分頁座標: {report['anchor_location']}, 信心度: {report['anchor_score']:.2f})"
             )
         else:
             report["message"] = (
@@ -147,14 +207,24 @@ class EnvironmentValidator:
                 2
             )
 
-            # If anchor was found with lower score, show it
+            # If anchors were partially detected, show them
+            if report.get("friend_location"):
+                fx, fy = report["friend_location"]
+                cv2.circle(dbg, (fx, fy), 18, (0, 255, 0), 2)
+                cv2.putText(dbg, "Friend Anchor", (fx + 22, fy + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
+
+            if report.get("voom_location"):
+                vx, vy = report["voom_location"]
+                cv2.circle(dbg, (vx, vy), 18, (255, 165, 0), 2)
+                cv2.putText(dbg, "VOOM Anchor", (vx + 22, vy + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 165, 0), 1)
+
             if report.get("anchor_location"):
                 ax, ay = report["anchor_location"]
                 score = report.get("anchor_score", 0)
                 cv2.circle(dbg, (ax, ay), 20, (0, 165, 255), 2)
                 cv2.putText(
                     dbg,
-                    f"Best Match ({score:.2f})",
+                    f"Message ({score:.2f})",
                     (ax + 25, ay),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,

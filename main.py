@@ -112,8 +112,9 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
     win_helper = LineWindowHelper()
     recovery_mgr = RecoveryManager(config)
 
-    # 0. Startup Environment Pre-flight Check (畫面左側 400px 基準檢測)
-    logger.info("🔍 [環境檢測] 正在檢查畫面左側 (x < 400) 是否為正常 LINE 介面...")
+    # 0. Startup Environment Pre-flight Check (畫面左側 400px 基準檢測與視窗單例去重)
+    logger.info("🔍 [環境檢測] 正在檢查畫面左側 (x < 400) 是否為正常 LINE 介面並清理多餘重複視窗...")
+    recovery_mgr.cleanup_duplicate_windows(keep_latest=True)
     env_report = validator.validate_screen()
     if env_report["is_valid"]:
         logger.info(env_report["message"])
@@ -149,8 +150,8 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                     pyautogui.click(cx, cy)
                     time.sleep(0.5)
 
-                    # Calculate safe focus coordinate in chat history pane (far right background, avoiding links/videos)
-                    safe_chat_pos = win_helper.get_safe_chat_history_click_pos()
+                    # Calculate safe focus coordinate in chat history pane (Dynamic white-patch vision detection with margin fallback)
+                    safe_chat_pos = win_helper.get_safe_chat_history_click_pos(detector=detector)
 
                     # 2. Extract chat history using safe focus click + Ctrl+A -> Ctrl+C
                     raw_text = clipboard.copy_selected_text(safe_click_pos=safe_chat_pos)
@@ -158,6 +159,8 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                         logger.warning("無法從剪貼簿讀取對話紀錄（可能點擊位置非對話區域）。自動解除焦點...")
                         if debug:
                             print(raw_text)
+                        # Check if an accidental tab was opened
+                        recovery_mgr.dismiss_accidental_tabs(validator)
                         win_helper.unfocus_chat_room(detector)
                         continue
 
@@ -214,8 +217,9 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                 if scan_count % 5 == 1:
                     logger.info("👀 正在持續掃描螢幕畫面，等待 LINE 新訊息綠點...（目前無未讀訊息）")
 
-                # 每 15 次掃描 (約 30 秒) 進行一次畫面左側 (x < 400) 靜態健康檢查，防止 LINE 視窗被關閉、最小化或黑畫面
+                # 每 15 次掃描 (約 30 秒) 進行一次畫面健康檢查與視窗去重，防止 LINE 視窗累積、最小化或黑畫面
                 if scan_count % 15 == 0:
+                    recovery_mgr.cleanup_duplicate_windows(keep_latest=True)
                     chk = validator.validate_screen()
                     if not chk["is_valid"]:
                         consecutive_invalid_env += 1

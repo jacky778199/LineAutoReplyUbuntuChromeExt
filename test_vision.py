@@ -181,12 +181,12 @@ def run_vision_test(config: dict = None):
             "color": (0, 255, 255)
         })
 
-    # (C) 加入 LINE 視窗安全點擊座標
+    # (C) 加入 LINE 視窗安全點擊座標 (純白背景動態辨識 + 結構安全錨點)
     win = win_helper.get_line_window()
     if win:
-        safe_chat_pos = win_helper.get_safe_chat_history_click_pos()
+        safe_chat_pos = win_helper.get_safe_chat_history_click_pos(detector=detector)
         safe_input_pos = win_helper.get_input_box_click_pos()
-        points_to_mark.append({"pos": safe_chat_pos, "label": "SafeChatHistory", "color": (255, 140, 0)})
+        points_to_mark.append({"pos": safe_chat_pos, "label": "SafeWhiteChatSpot", "color": (0, 255, 0)})
         points_to_mark.append({"pos": safe_input_pos, "label": "SafeInputBox", "color": (0, 165, 255)})
 
     grid_map_path = "debug/coordinate_grid_map.png"
