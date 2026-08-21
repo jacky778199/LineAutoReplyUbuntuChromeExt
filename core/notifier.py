@@ -90,6 +90,46 @@ class TelegramNotifier:
             logger.error(f"❌ Telegram 發送圖片異常: {e}")
             return False
 
+    def notify_manual_action_needed(
+        self,
+        contact_name: str,
+        latest_message: str,
+        reason: str = "AI 判斷無須回覆或話題已結束"
+    ) -> bool:
+        """
+        Sends an alert to Telegram indicating a message was read/opened but needs manual review.
+        """
+        import html
+        safe_contact = html.escape(contact_name or "未知好友")
+        safe_msg = html.escape(latest_message or "(無訊息文字)")[:300]
+        safe_reason = html.escape(reason)
+
+        text = (
+            f"🔔 <b>【LINE 待處理訊息通知】</b>\n"
+            f"👤 <b>對象</b>：<code>{safe_contact}</code>\n"
+            f"💬 <b>最新內容</b>：\n<i>{safe_msg}</i>\n\n"
+            f"⚠️ <b>原因</b>：{safe_reason}\n"
+            f"📌 <i>LINE 該對話室目前為開啟狀態，請手動確認與回覆！</i>"
+        )
+        return self.send_message(text)
+
+    def notify_error_alert(
+        self,
+        reason_code: str,
+        details: str,
+        photo_path: str = None
+    ) -> bool:
+        """Sends an urgent error alert to Telegram."""
+        import html
+        text = (
+            f"🚨 <b>【LINE 機器人異常警報】</b>\n"
+            f"❌ <b>錯誤代碼</b>：<code>{html.escape(reason_code)}</code>\n"
+            f"📝 <b>詳細資訊</b>：{html.escape(details)[:300]}"
+        )
+        if photo_path and os.path.exists(photo_path):
+            return self.send_photo(photo_path, caption=text[:1024])
+        return self.send_message(text)
+
     def test_connection(self) -> dict:
         """Tests Telegram Bot connection by querying getMe and sending a test message."""
         result = {"status": "FAILED", "bot_name": "", "error": ""}

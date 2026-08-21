@@ -38,49 +38,114 @@ class LLMService:
         # Replace placeholder if present
         return prompt.replace("[MY_NAME]", self.my_name)
 
-    def generate_reply(self, raw_chat_text: str, contact_name: str) -> str:
+    def get_last_diagnostics(self) -> dict:
+        """Returns the diagnostics metadata of the last generate_reply invocation."""
+        return getattr(self, "_last_diagnostics", {})
+
+    def generate_reply(self, raw_chat_text: str, contact_name: str, sender_name: str = None) -> str:
         """
         Main entry point for generating a response.
-        Tries Primary (Vertex AI / Gemini) first. If it fails, falls back to Backup (OpenAI).
+        Tries Primary (Vertex AI / Gemini) first. If it fails, falls back to Backup (OpenAI/Agnes).
+        Records execution diagnostics in self._last_diagnostics.
         """
+        import time
+        t_start = time.time()
+        self._last_diagnostics = {
+            "contact_name": contact_name,
+            "sender_name": sender_name,
+            "prompt": "",
+            "provider": "",
+            "model": "",
+            "duration_sec": 0.0,
+            "raw_reply": "",
+            "error": None,
+            "status": "INIT"
+        }
+
         if not raw_chat_text or not raw_chat_text.strip():
             logger.warning("Empty raw chat text received. Skipping LLM generation.")
+            self._last_diagnostics["status"] = "EMPTY_INPUT"
+            self._last_diagnostics["raw_reply"] = "[NO_REPLY]"
             return "[NO_REPLY]"
 
-        system_prompt = self._get_system_prompt_for_contact(contact_name)
-        full_user_prompt = f"""
-你現在正在處理 LINE 聊天室中與【{contact_name}】的對話。
-我的名稱是：「{self.my_name}」。
+        target_sender = sender_name or contact_name
+        system_prompt = self._get_system_prompt_for_contact(target_sender)
 
-以下是從 LINE 桌面版全選複製出來的原始對話紀錄 (Raw Text)：
+        # Use recent 4000 characters to ensure context is rich but avoid exceeding token limits
+        chat_context = raw_chat_text[-4000:] if len(raw_chat_text) > 4000 else raw_chat_text
+
+        full_user_prompt = f"""
+你現在正在處理 LINE 聊天室中與【{target_sender}】的對話。
+我的名稱（本人）是：「{self.my_name}」。
+對話中主要的對話對象是：「{target_sender}」。
+
+以下是從 LINE 複製出的最近原始對話紀錄 (已包含最新訊息)：
 ==================================================
-{raw_chat_text}
+{chat_context}
 ==================================================
 
 【處理規則】：
 1. 請仔細檢視對話紀錄最下方的最新訊息。
-2. 如果最新發出的訊息是我本人（{self.my_name}）發送的，或者該訊息不需要回覆，請**僅回傳** "[NO_REPLY]"。
-3. 如果最新訊息是對方（{contact_name}）發出的，請根據上述的系統指示風格，生成一句合適的回覆。
+2. 如果最新發出的訊息是我本人（{self.my_name}）發送的、或者該訊息不需要回覆（例如已結束話題、純貼圖或無須答覆），請**僅回傳** "[NO_REPLY]"。
+3. 如果最新訊息是由對方（{target_sender}）發出的，請根據上述的系統指示風格，針對他的最新訊息生成一句合適的回覆。
 4. 請直接輸出要回覆的純文字，嚴禁包含引號、註解或任何 Markdown 標記。
 """
+        self._last_diagnostics["prompt"] = f"--- System Prompt ---\n{system_prompt}\n\n--- User Prompt ---\n{full_user_prompt}"
 
         # 1. Try Primary LLM (Vertex AI / Gemini)
+        primary_cfg = self.llm_config.get("primary", {})
         try:
-            logger.info(f"Attempting reply generation via Primary LLM ({self.llm_config.get('primary', {}).get('provider', 'vertex_ai')})...")
+            prov_name = primary_cfg.get("provider", "vertex_ai")
+            model_name = primary_cfg.get("model_name", "gemini-3.6-flash")
+            logger.info(f"Attempting reply generation via Primary LLM ({prov_name}: {model_name})...")
+            
             reply = self._call_primary_llm(system_prompt, full_user_prompt)
-            if reply:
-                return reply.strip()
-        except Exception as e:
-            logger.warning(f"Primary LLM failed: {e}. Switching to Backup LLM (OpenAI)...")
+            duration = time.time() - t_start
 
-        # 2. Try Backup LLM (OpenAI API)
-        try:
-            logger.info("Attempting reply generation via Backup LLM (OpenAI)...")
-            reply = self._call_backup_llm(system_prompt, full_user_prompt)
+            self._last_diagnostics.update({
+                "provider": prov_name,
+                "model": model_name,
+                "duration_sec": round(duration, 2),
+                "raw_reply": reply,
+                "status": "SUCCESS" if reply and reply.strip() != "[NO_REPLY]" else "NO_REPLY"
+            })
+
             if reply:
                 return reply.strip()
         except Exception as e:
+            logger.warning(f"Primary LLM failed: {e}. Switching to Backup LLM...")
+            self._last_diagnostics["error"] = f"Primary ({primary_cfg.get('provider')}): {e}"
+
+        # 2. Try Backup LLM (OpenAI / Agnes API)
+        backup_cfg = self.llm_config.get("backup", {})
+        try:
+            prov_name = backup_cfg.get("provider", "openai")
+            model_name = backup_cfg.get("model_name", "agnes-2.0-flash")
+            logger.info(f"Attempting reply generation via Backup LLM ({prov_name}: {model_name})...")
+            
+            reply = self._call_backup_llm(system_prompt, full_user_prompt)
+            duration = time.time() - t_start
+
+            self._last_diagnostics.update({
+                "provider": prov_name,
+                "model": model_name,
+                "duration_sec": round(duration, 2),
+                "raw_reply": reply,
+                "status": "SUCCESS" if reply and reply.strip() != "[NO_REPLY]" else "NO_REPLY"
+            })
+
+            if reply:
+                return reply.strip()
+        except Exception as e:
+            duration = time.time() - t_start
             logger.error(f"Backup LLM also failed: {e}")
+            existing_err = self._last_diagnostics.get("error", "")
+            self._last_diagnostics.update({
+                "duration_sec": round(duration, 2),
+                "error": f"{existing_err} | Backup ({backup_cfg.get('provider')}): {e}",
+                "status": "FAILED",
+                "raw_reply": "[NO_REPLY]"
+            })
 
         return "[NO_REPLY]"
 

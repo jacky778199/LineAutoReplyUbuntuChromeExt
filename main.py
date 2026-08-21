@@ -4,6 +4,7 @@ Integrates Green Dot Vision Detection, Dynamic Window Geometry, Safe Click Ancho
 Whitelist FIFO Queue, and Primary/Backup Dual LLM Auto-Response.
 """
 
+import re
 import os
 import sys
 import time
@@ -18,12 +19,18 @@ if sys.platform != "win32" and "DISPLAY" not in os.environ:
 
 import pyautogui
 
+import cv2
+import numpy as np
+
 from core.clipboard_manager import ClipboardManager
 from core.vision_detector import GreenDotDetector
 from core.llm_service import LLMService
 from core.window_helper import LineWindowHelper
 from core.environment_validator import EnvironmentValidator
 from core.recovery_manager import RecoveryManager
+from core.chat_logger import ChatLogger
+from core.sidebar_ocr import SidebarOCR
+from core.notifier import TelegramNotifier
 
 
 # Setup UTF-8 encoding for Windows console
@@ -34,15 +41,8 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-# Setup Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log", encoding="utf-8")
-    ]
-)
+# Initialize Global Logger & ChatLogger
+chat_logger = ChatLogger(log_dir="logs", debug_dir="debug")
 logger = logging.getLogger("LineBot")
 
 
@@ -56,20 +56,202 @@ def load_config(config_path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def extract_contact_name_from_raw_text(raw_text: str, whitelist: list, default_name: str = "未知好友") -> str:
-    """
-    Attempts to identify which whitelisted contact is in the raw copied chat log text.
-    Returns the matched contact name, or default_name.
-    """
-    if not raw_text:
-        return default_name
+def save_copy_failure_debug(
+    scan_count: int,
+    dot_pos: tuple,
+    safe_chat_pos: tuple,
+    clipboard_mgr: ClipboardManager,
+    win_helper: LineWindowHelper,
+    debug_dir: str = "debug",
+    is_test: bool = False
+):
+    """Legacy helper: delegates diagnostic archiving to ChatLogger."""
+    session_data = {
+        "scan_count": scan_count,
+        "is_test": is_test,
+        "clipboard_diagnostics": clipboard_mgr.get_last_diagnostics() if clipboard_mgr else {},
+    }
+    return chat_logger.archive_failure(
+        reason_code="COPY_EMPTY",
+        reason_desc="無法從剪貼簿讀取對話紀錄（剪貼簿為空）",
+        session_data=session_data,
+        raw_text="",
+        dot_pos=dot_pos,
+        safe_click_pos=safe_chat_pos,
+        save_screenshot=True
+    )
 
-    # Check if any whitelisted name appears in the first few lines of raw text
-    for contact in whitelist:
-        if contact in raw_text[:500]:
-            return contact
-            
-    return default_name
+
+TIME_HEADER_PATTERN = re.compile(
+    r"^(?:(?:(?:上午|下午|AM|PM)\s*)?\b\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM|上午|下午))?)\s+(.*)$",
+    re.IGNORECASE
+)
+
+DATE_HEADER_PATTERN = re.compile(
+    r"^(?:\d{4}[./年-]\d{1,2}[./月-]\d{1,2}(?:日)?(?:\s*星期[一二三四五六日天]|\s*\(?[一二三四五六日天]\)?)?|昨天|今天)$"
+)
+
+NOISE_PATTERNS = [
+    "Your OS version doesn't support this feature.",
+    "Save as...",
+    "Save",
+    "Share",
+    "Read",
+    "已讀",
+    "未讀",
+]
+
+FILE_SIZE_PATTERN = re.compile(r"^(?:Size:\s*\d+(?:\.\d+)?\s*(?:KB|MB|GB)|Until:\s*)$", re.IGNORECASE)
+
+
+def clean_raw_line(line: str) -> str:
+    """Removes invisible zero-width unicode chars and object replacement chars."""
+    if not line:
+        return ""
+    return (
+        line.replace("\u200c", "")
+        .replace("\u200b", "")
+        .replace("\ufeff", "")
+        .replace("\ufffc", "")
+        .strip()
+    )
+
+
+def is_noise_line(line: str) -> bool:
+    """Returns True if a line contains only placeholder symbols, file buttons, or system notices."""
+    cleaned = clean_raw_line(line)
+    if not cleaned:
+        return True
+    if cleaned in NOISE_PATTERNS:
+        return True
+    if FILE_SIZE_PATTERN.match(cleaned):
+        return True
+    if cleaned.endswith(".pdf") or cleaned.endswith(".png") or cleaned.endswith(".jpg"):
+        return True
+    return False
+
+
+def extract_latest_sender_info(
+    raw_text: str,
+    whitelist: list = None,
+    my_name: str = "我",
+    default_name: str = "未知好友"
+) -> dict:
+    """
+    Enhanced sender and message parser for LINE Desktop & Chrome Extension.
+    Supports global whitelist search, noise line filtering, and bottom-up
+    substantive message extraction.
+    """
+    if not raw_text or not raw_text.strip():
+        return {
+            "sender": default_name,
+            "is_me": False,
+            "is_whitelisted": False,
+            "latest_message": "",
+            "matched_whitelist_item": None
+        }
+
+    raw_lines = raw_text.splitlines()
+    cleaned_lines = []
+    for line in raw_lines:
+        c = clean_raw_line(line)
+        if c and not is_noise_line(c):
+            cleaned_lines.append(c)
+
+    # 1. Global whitelist match across the full text (not restricted to [:500])
+    matched_wl = None
+    if whitelist:
+        top_text = "\n".join(raw_lines[:100])
+        for wl in whitelist:
+            if wl in top_text or (len(wl) > 1 and wl.lower() in top_text.lower()):
+                matched_wl = wl
+                break
+        if not matched_wl:
+            for wl in whitelist:
+                if wl in raw_text or (len(wl) > 1 and wl.lower() in raw_text.lower()):
+                    matched_wl = wl
+                    break
+
+    # 2. Scan lines bottom-up to find timestamps or messages
+    latest_sender = None
+    is_me = False
+    latest_msg_lines = []
+
+    for i in range(len(raw_lines) - 1, -1, -1):
+        line = clean_raw_line(raw_lines[i])
+        if not line or is_noise_line(line):
+            continue
+        if DATE_HEADER_PATTERN.match(line):
+            continue
+
+        m = TIME_HEADER_PATTERN.match(line)
+        if m:
+            rest = m.group(1).strip()
+            sender_name = None
+            msg_part = ""
+
+            if my_name and (rest == my_name or rest.startswith(my_name + " ") or rest.startswith(my_name + "\t") or rest.startswith(my_name)):
+                sender_name = my_name
+                msg_part = rest[len(my_name):].strip()
+            else:
+                for wl in (whitelist or []):
+                    if rest == wl or rest.startswith(wl + " ") or rest.startswith(wl + "\t") or rest.startswith(wl):
+                        sender_name = wl
+                        msg_part = rest[len(wl):].strip()
+                        break
+
+            if not sender_name:
+                parts = rest.split(None, 1)
+                sender_name = parts[0]
+                msg_part = parts[1] if len(parts) > 1 else ""
+
+            latest_sender = sender_name
+            if my_name and (sender_name == my_name or (my_name in sender_name)):
+                is_me = True
+
+            if msg_part and not is_noise_line(msg_part):
+                latest_msg_lines.insert(0, msg_part)
+            break
+        else:
+            latest_msg_lines.insert(0, line)
+            if len(latest_msg_lines) >= 3:
+                break
+
+    # 3. Fallback when no standard timestamp header exists (common in Chrome extension 1-on-1 chat)
+    if not latest_sender:
+        if matched_wl:
+            latest_sender = matched_wl
+        else:
+            latest_sender = default_name
+
+    # Determine whitelist status
+    if matched_wl:
+        is_whitelisted = True
+    elif whitelist:
+        is_whitelisted = (latest_sender in whitelist)
+    else:
+        is_whitelisted = True
+
+    latest_msg_text = "\n".join(latest_msg_lines).strip()
+    if not latest_msg_text and cleaned_lines:
+        latest_msg_text = cleaned_lines[-1]
+
+    if my_name and latest_msg_text.startswith(my_name + ":"):
+        is_me = True
+
+    return {
+        "sender": latest_sender,
+        "is_me": is_me,
+        "is_whitelisted": is_whitelisted,
+        "latest_message": latest_msg_text,
+        "matched_whitelist_item": matched_wl
+    }
+
+
+def extract_contact_name_from_raw_text(raw_text: str, whitelist: list, default_name: str = "未知好友") -> str:
+    """Legacy compatibility helper: returns sender name using latest sender info."""
+    info = extract_latest_sender_info(raw_text, whitelist=whitelist, default_name=default_name)
+    return info["sender"]
 
 
 def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
@@ -111,14 +293,15 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
     llm = LLMService(config)
     win_helper = LineWindowHelper()
     recovery_mgr = RecoveryManager(config)
+    sidebar_ocr = SidebarOCR(cooldown_seconds=30)
+    notifier = TelegramNotifier(config)
 
-    # 0. Startup Environment Pre-flight Check (畫面左側 400px 基準檢測與視窗單例去重)
+    # 0. Startup Environment Pre-flight Check
     logger.info("🔍 [環境檢測] 正在檢查畫面左側 (x < 400) 是否為正常 LINE 介面並清理多餘重複視窗...")
     recovery_mgr.cleanup_duplicate_windows(keep_latest=True)
     env_report = validator.validate_screen()
     if env_report["is_valid"]:
         logger.info(env_report["message"])
-        # 啟動時主動點擊 Message_icon 切換至聊天對話分頁
         recovery_mgr.switch_to_chat_tab()
     else:
         logger.warning(env_report["message"])
@@ -129,7 +312,6 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                 logger.info("✅ 啟動階段環境自動恢復成功！")
             else:
                 logger.warning("⚠️ 啟動階段環境自動恢復失敗，將持續在背景監控重試。")
-
 
     processed_signatures = set()
     scan_count = 0
@@ -145,79 +327,212 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                 consecutive_invalid_env = 0
                 logger.info(f"🎉 發現 {len(unread_points)} 個未讀訊息綠點標籤！開始處理 (FIFO 佇列)...")
 
-                for (cx, cy) in unread_points:
-                    logger.info(f"正在移動滑鼠點擊未讀聊天室標籤 ({cx}, {cy})...")
-                    pyautogui.click(cx, cy)
-                    time.sleep(0.5)
+                # Capture full screen once for sidebar Zero-Click OCR pre-filtering
+                screenshot_bgr, _ = detector.capture_screen()
 
-                    # Calculate safe focus coordinate in chat history pane (Dynamic white-patch vision detection with margin fallback)
+                for (cx, cy) in unread_points:
+                    session_id = f"trace_{time.strftime('%Y%m%d_%H%M%S')}_{random.randint(100, 999)}"
+
+                    # 1.5 ZERO-CLICK WHITELIST PRE-FILTERING (點擊前 OCR 視覺白名單預判)
+                    if screenshot_bgr is not None and whitelist:
+                        ocr_res = sidebar_ocr.check_whitelist_zero_click(screenshot_bgr, (cx, cy), whitelist=whitelist)
+                        if not ocr_res["is_whitelisted"]:
+                            if not ocr_res.get("in_cooldown"):
+                                rec_text = ocr_res.get('recognized_text') or '(無文字)'
+                                logger.info(
+                                    f"🚫 [{session_id}] [點前 OCR 攔截] 側邊欄文字: '{rec_text}' 不在白名單中！"
+                                    f"【絕不點擊進入，永久保持未讀綠點/手機紅點】"
+                                )
+                                chat_logger.archive_failure(
+                                    reason_code="ZERO_CLICK_NON_WHITELIST",
+                                    reason_desc=f"點前 OCR 辨識非白名單 ('{rec_text}')，保持未讀",
+                                    session_data={"session_id": session_id, "dot_pos": (cx, cy), "recognized_text": rec_text},
+                                    dot_pos=(cx, cy),
+                                    save_screenshot=False
+                                )
+                            continue
+                        else:
+                            logger.info(
+                                f"[{session_id}] ✅ [點前 OCR 通過] 辨識出白名單對象【{ocr_res['matched_contact']}】"
+                                f" (側邊欄文字: '{ocr_res['recognized_text']}'), 準備進入聊天室..."
+                            )
+
+                    logger.info(f"[{session_id}] 正在移動滑鼠點擊未讀聊天室標籤 ({cx}, {cy})...")
+                    pyautogui.click(cx, cy)
+                    time.sleep(2)
+
+                    # Calculate safe focus coordinate in chat history pane
                     safe_chat_pos = win_helper.get_safe_chat_history_click_pos(detector=detector)
 
                     # 2. Extract chat history using safe focus click + Ctrl+A -> Ctrl+C
                     raw_text = clipboard.copy_selected_text(safe_click_pos=safe_chat_pos)
                     if not raw_text:
-                        logger.warning("無法從剪貼簿讀取對話紀錄（可能點擊位置非對話區域）。自動解除焦點...")
-                        if debug:
-                            print(raw_text)
-                        # Check if an accidental tab was opened
+                        logger.warning(f"⚠️ [{session_id}] 無法從剪貼簿讀取對話紀錄（剪貼簿為空）。已儲存診斷報告與截圖，自動解除焦點...")
+                        chat_logger.archive_failure(
+                            reason_code="COPY_EMPTY",
+                            reason_desc="無法從剪貼簿讀取對話紀錄（剪貼簿為空）",
+                            session_data={"session_id": session_id, "scan_count": scan_count},
+                            raw_text="",
+                            dot_pos=(cx, cy),
+                            safe_click_pos=safe_chat_pos
+                        )
                         recovery_mgr.dismiss_accidental_tabs(validator)
                         win_helper.unfocus_chat_room(detector)
                         continue
 
-                    # 3. Identify contact name from raw text
-                    contact_name = extract_contact_name_from_raw_text(raw_text, whitelist)
-                    logger.info(f"偵測到聊天室對象：{contact_name}")
+                    # 3. Identify latest message sender & info from raw text
+                    my_name = bot_cfg.get("my_name", "我")
+                    sender_info = extract_latest_sender_info(raw_text, whitelist=whitelist, my_name=my_name)
+                    sender_info["session_id"] = session_id
+                    sender_info["scan_count"] = scan_count
+                    
+                    latest_sender = sender_info["sender"]
+                    is_me = sender_info["is_me"]
+                    is_whitelisted = sender_info["is_whitelisted"]
+                    latest_msg_snippet = sender_info["latest_message"].replace("\n", " ")[:50]
 
-                    # 4. Check Whitelist
-                    if whitelist and contact_name not in whitelist:
-                        logger.info(f"對象 '{contact_name}' 不在白名單中，跳過不處理。自動切回聊天列表...")
+                    logger.info(f"[{session_id}] 🎯 鎖定對象：【{latest_sender}】(最新訊息：'{latest_msg_snippet}') | 白名單={is_whitelisted} | 本人發言={is_me}")
+
+                    # 4. Check if latest message was sent by myself
+                    if is_me:
+                        logger.info(f"[{session_id}] 最後一則訊息由自己 ({my_name}) 發出，無須回覆。自動切回聊天列表...")
+                        chat_logger.archive_failure(
+                            reason_code="LAST_MSG_IS_ME",
+                            reason_desc=f"最後一則訊息由自己 ({my_name}) 發出，無須回覆",
+                            session_data=sender_info,
+                            raw_text=raw_text,
+                            dot_pos=(cx, cy),
+                            safe_click_pos=safe_chat_pos,
+                            save_screenshot=False
+                        )
+                        # Telegram 手動處理通知 (已讀但自己最後一句)
+                        notifier.notify_manual_action_needed(
+                            contact_name=latest_sender,
+                            latest_message=sender_info.get("latest_message", ""),
+                            reason=f"最後一則訊息為自己 ({my_name}) 發出"
+                        )
+                        win_helper.unfocus_chat_room(detector)
+                        continue
+
+                    # 5. Check Whitelist (雙重保險防護)
+                    if whitelist and not is_whitelisted:
+                        logger.warning(f"[{session_id}] ⚠️ 對象 '{latest_sender}' 不在白名單中，跳過不處理。自動切回聊天列表...")
+                        chat_logger.archive_failure(
+                            reason_code="NOT_WHITELISTED",
+                            reason_desc=f"對象 '{latest_sender}' 不在白名單中",
+                            session_data=sender_info,
+                            raw_text=raw_text,
+                            dot_pos=(cx, cy),
+                            safe_click_pos=safe_chat_pos,
+                            save_screenshot=True
+                        )
+                        notifier.notify_manual_action_needed(
+                            contact_name=latest_sender,
+                            latest_message=sender_info.get("latest_message", ""),
+                            reason="非白名單聯絡人，已開啟但未回覆"
+                        )
                         win_helper.unfocus_chat_room(detector)
                         continue
 
                     # Prevent duplicate processing of identical recent raw text
                     text_sig = hash(raw_text[-300:])
                     if text_sig in processed_signatures:
-                        logger.info("此對話內容近期已處理過，跳過防重複發送。自動解除焦點...")
+                        logger.info(f"[{session_id}] 此對話內容近期已處理過，跳過防重複發送。自動解除焦點...")
+                        chat_logger.archive_failure(
+                            reason_code="DUPLICATE_TEXT",
+                            reason_desc="此對話內容近期已處理過，跳過防重複發送",
+                            session_data=sender_info,
+                            raw_text=raw_text,
+                            dot_pos=(cx, cy),
+                            safe_click_pos=safe_chat_pos,
+                            save_screenshot=False
+                        )
                         win_helper.unfocus_chat_room(detector)
                         continue
                     processed_signatures.add(text_sig)
                     if len(processed_signatures) > 100:
                         processed_signatures.clear()
 
-                    # 5. Generate LLM Reply
-                    logger.info("正在請求 LLM 生成回覆文字...")
-                    reply_text = llm.generate_reply(raw_text, contact_name)
+                    # 6. Generate LLM Reply targeted at latest sender
+                    logger.info(f"[{session_id}] 正在針對【{latest_sender}】請求 LLM 生成回覆文字...")
+                    reply_text = llm.generate_reply(raw_text, contact_name=latest_sender, sender_name=latest_sender)
+                    llm_diag = llm.get_last_diagnostics()
 
                     if reply_text == "[NO_REPLY]":
-                        logger.info("LLM 判斷最後一條訊息由自己發出或無須回覆。自動解除聊天室焦點...")
+                        logger.info(f"[{session_id}] LLM 判斷無須回覆或最後一條由自己發出。自動解除聊天室焦點...")
+                        chat_logger.archive_failure(
+                            reason_code="LLM_NO_REPLY",
+                            reason_desc="LLM 判斷無須回覆或最後一則訊息由自己發出",
+                            session_data=sender_info,
+                            raw_text=raw_text,
+                            llm_info=llm_diag,
+                            dot_pos=(cx, cy),
+                            safe_click_pos=safe_chat_pos,
+                            save_screenshot=False
+                        )
+                        # Telegram 手動處理通知 (LLM 判斷不需回覆)
+                        notifier.notify_manual_action_needed(
+                            contact_name=latest_sender,
+                            latest_message=sender_info.get("latest_message", ""),
+                            reason="AI 判斷此訊息無須回覆或話題已結束"
+                        )
                         win_helper.unfocus_chat_room(detector)
                         continue
 
-                    logger.info(f"LLM 生成回覆成功：'{reply_text}'")
+                    logger.info(f"[{session_id}] ✨ LLM 生成回覆成功：'{reply_text}' (耗時: {llm_diag.get('duration_sec', 0)}s)")
 
                     # Calculate safe input box position
                     safe_input_pos = win_helper.get_input_box_click_pos()
 
-                    # 6. Send Reply via Clipboard
+                    # 7. Send Reply via Clipboard
+                    send_success = False
                     if dry_run:
-                        logger.info(f"[DRY-RUN 乾執行] 不發送真實訊息。預計回覆：{reply_text}")
+                        logger.info(f"[{session_id}] [DRY-RUN 乾執行] 不發送真實訊息。預計回覆：{reply_text}")
+                        send_success = True
                     else:
-                        clipboard.send_message_via_clipboard(reply_text, safe_input_pos=safe_input_pos)
+                        send_success = clipboard.send_message_via_clipboard(reply_text, safe_input_pos=safe_input_pos)
 
-                    # 7. Unfocus active chat room (Click Message_icon.png + Press ESC) to ensure new messages show green dot
-                    logger.info("點擊 Message Icon 並按下 ESC 解除聊天室焦點，確保新訊息可顯示綠點...")
+                    if send_success:
+                        chat_logger.log_reply_success(
+                            session_id=session_id,
+                            contact_name=latest_sender,
+                            latest_message=sender_info.get("latest_message", ""),
+                            reply_text=reply_text,
+                            duration_sec=llm_diag.get("duration_sec", 0.0),
+                            provider=llm_diag.get("provider", ""),
+                            model_name=llm_diag.get("model", "")
+                        )
+                    else:
+                        logger.error(f"[{session_id}] ❌ 訊息貼上與送出失敗！")
+                        chat_logger.archive_failure(
+                            reason_code="SEND_FAILED",
+                            reason_desc="訊息貼上或 Enter 發送失敗",
+                            session_data=sender_info,
+                            raw_text=raw_text,
+                            llm_info=llm_diag,
+                            dot_pos=(cx, cy),
+                            safe_click_pos=safe_input_pos,
+                            save_screenshot=True
+                        )
+                        notifier.notify_error_alert(
+                            reason_code="SEND_FAILED",
+                            details=f"回覆對象【{latest_sender}】時訊息發送失敗！"
+                        )
+
+                    # 8. Unfocus active chat room
+                    logger.info(f"[{session_id}] 點擊 Message Icon 並按下 ESC 解除聊天室焦點，確保新訊息可顯示綠點...")
                     win_helper.unfocus_chat_room(detector)
 
-                    # 8. Random delay to simulate human typing & prevent rate limits
+                    # 9. Random delay to simulate human typing & prevent rate limits
                     delay = random.uniform(delay_min, delay_max)
                     logger.info(f"隨機延遲 {delay:.2f} 秒，準備進行下一次掃描...")
                     time.sleep(delay)
             else:
-                # 印出持續掃描訊息 (每 5 次掃描/10 秒印出一次，讓使用者知道程式運作中)
+                # 印出持續掃描訊息 (每 5 次掃描/10 秒印出一次)
                 if scan_count % 5 == 1:
                     logger.info("👀 正在持續掃描螢幕畫面，等待 LINE 新訊息綠點...（目前無未讀訊息）")
 
-                # 每 15 次掃描 (約 30 秒) 進行一次畫面健康檢查與視窗去重，防止 LINE 視窗累積、最小化或黑畫面
+                # 每 15 次掃描 (約 30 秒) 進行一次畫面健康檢查與視窗去重
                 if scan_count % 15 == 0:
                     recovery_mgr.cleanup_duplicate_windows(keep_latest=True)
                     chk = validator.validate_screen()
@@ -228,7 +543,6 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                             f"畫面左側 (x < 400) LINE 介面異常: {'; '.join(chk['warnings'])}"
                         )
 
-                        # 連續 2 次異常 (或黑畫面) 且開啟自動恢復時，自動觸發修復
                         if recovery_mgr.auto_recover and (consecutive_invalid_env >= 2 or not chk.get("is_non_blank", True)):
                             logger.info("🚨 偵測到環境持續異常或黑畫面，立即觸發自動恢復 (Auto-Recovery)...")
                             if recovery_mgr.recover_environment(validator):

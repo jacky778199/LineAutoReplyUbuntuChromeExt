@@ -652,16 +652,51 @@ class RecoveryManager:
             logger.error(f"切換聊天分頁時發生錯誤: {e}")
             return False
 
-    def dismiss_accidental_tabs(self, validator=None) -> bool:
+    def dismiss_accidental_tabs(self, validator=None, is_test: bool = False) -> bool:
         """
         Scheme C: Lightweight self-healing defense against accidental hyperlink clicks.
-        If a click opened a new browser tab or popup, sends Ctrl+W and Escape to close
-        the unwanted tab and restore LINE desktop focus.
+        If a click opened a new browser tab or popup, captures a screenshot of the unwanted tab,
+        then sends Ctrl+W and Escape to close it and restore LINE desktop focus.
 
         Returns True if environment becomes valid immediately after, avoiding full Chrome restart.
         """
         logger.info("🛡️ [防禦性自癒 Scheme C] 嘗試發送 Ctrl+W / Esc 關閉可能誤開的外部網頁分頁...")
         try:
+            # 0. Capture screenshot BEFORE closing the tab so the user can inspect what opened
+            try:
+                os.makedirs("debug", exist_ok=True)
+                timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+                display_time = time.strftime("%Y-%m-%d %H:%M:%S")
+
+                screenshot_pil = pyautogui.screenshot()
+                screenshot_cv = cv2.cvtColor(np.array(screenshot_pil), cv2.COLOR_RGB2BGR)
+                annotated = screenshot_cv.copy()
+
+                # Add header banner
+                h, w = annotated.shape[:2]
+                banner_title = f"[TEST] BEFORE DISMISSING TAB (Ctrl+W) | {display_time}" if is_test else f"BEFORE DISMISSING TAB (Ctrl+W) | {display_time}"
+                cv2.rectangle(annotated, (0, 0), (w, 40), (0, 100, 255), -1)
+                cv2.putText(
+                    annotated,
+                    banner_title,
+                    (15, 26),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (255, 255, 255),
+                    2
+                )
+
+                file_prefix = "test_accidental_tab_" if is_test else "accidental_tab_"
+                latest_name = "test_latest_accidental_tab.png" if is_test else "latest_accidental_tab.png"
+
+                shot_path = os.path.join("debug", f"{file_prefix}{timestamp_str}.png")
+                latest_shot_path = os.path.join("debug", latest_name)
+                cv2.imwrite(shot_path, annotated)
+                cv2.imwrite(latest_shot_path, annotated)
+                logger.info(f"📸 關閉分頁前已截圖保存至: {shot_path} (最新截圖: {latest_shot_path})")
+            except Exception as ss_err:
+                logger.warning(f"關閉分頁前截圖失敗: {ss_err}")
+
             # 1. Send Ctrl+W (Close current active tab in Chrome)
             pyautogui.hotkey('ctrl', 'w')
             time.sleep(0.5)

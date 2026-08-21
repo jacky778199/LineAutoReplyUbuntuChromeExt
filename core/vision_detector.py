@@ -41,6 +41,8 @@ class GreenDotDetector:
         self.min_blob_area = min_blob_area
         self.max_blob_area = max_blob_area
         self.detection_mode = detection_mode.lower()
+        self._last_debug_points = None
+        self._last_safe_spot = None
         self.ensure_template_exists()
 
     def ensure_template_exists(self):
@@ -172,11 +174,13 @@ class GreenDotDetector:
             final_points = self._group_nearby_points(detected_points, min_distance=18)
             final_points.sort(key=lambda p: p[1])
 
-            # Debug logging and Visual Output (僅在 debug 模式或明確指定 save_debug_image 時才輸出圖片)
+            # Debug logging and Visual Output (僅在 debug 模式且辨識結果有變動，或明確指定 save_debug_image 時才輸出圖片)
             if self.debug or save_debug_image:
-                self._save_debug_visualization(
-                    screenshot_bgr, template, max_loc, max_val, final_points, blob_matches, offset_x, offset_y
-                )
+                if save_debug_image or final_points != self._last_debug_points:
+                    self._save_debug_visualization(
+                        screenshot_bgr, template, max_loc, max_val, final_points, blob_matches, offset_x, offset_y
+                    )
+                    self._last_debug_points = list(final_points)
 
             return final_points
 
@@ -426,7 +430,8 @@ class GreenDotDetector:
         min_brightness: int = 245,
         max_std_dev: float = 8.0,
         screenshot_bgr: np.ndarray = None,
-        save_debug: bool = False
+        save_debug: bool = False,
+        debug_output_path: str = "debug/safe_white_spot.png"
     ) -> tuple:
         """
         Dynamically locates a safe, pure white/blank background spot in the chat area
@@ -439,7 +444,8 @@ class GreenDotDetector:
             min_brightness: Minimum average grayscale brightness (default: 245 for near-pure white).
             max_std_dev: Maximum standard deviation across the patch to reject edges/text.
             screenshot_bgr: Optional pre-captured BGR screenshot image.
-            save_debug: If True, saves visual debug image to debug/safe_white_spot.png.
+            save_debug: If True, saves visual debug image to debug_output_path.
+            debug_output_path: Path to save the annotated debug image (default: debug/safe_white_spot.png).
 
         Returns:
             (safe_x, safe_y) absolute coordinates of the safe spot's center, or None if not found.
@@ -496,8 +502,9 @@ class GreenDotDetector:
                 pref_x, pref_y = preferred_pos
                 if is_safe_white_patch(pref_x, pref_y):
                     logger.debug(f"Preferred safe position ({pref_x}, {pref_y}) validated as pure white background.")
-                    if save_debug or self.debug:
-                        self._save_safe_spot_debug(screenshot_bgr, (pref_x, pref_y), patch_size, search_region)
+                    if save_debug or (self.debug and (pref_x, pref_y) != self._last_safe_spot):
+                        self._save_safe_spot_debug(screenshot_bgr, (pref_x, pref_y), patch_size, search_region, output_path=debug_output_path)
+                        self._last_safe_spot = (pref_x, pref_y)
                     return (pref_x, pref_y)
 
             # 2. Determine search bounding box
@@ -530,20 +537,29 @@ class GreenDotDetector:
                 for cy in y_candidates:
                     if is_safe_white_patch(cx, cy):
                         logger.info(f"🎯 [純白安全區偵測成功] 於座標 ({cx}, {cy}) 找到符合標準的純白無連結背景區！")
-                        if save_debug or self.debug:
-                            self._save_safe_spot_debug(screenshot_bgr, (cx, cy), patch_size, search_region)
+                        if save_debug or (self.debug and (cx, cy) != self._last_safe_spot):
+                            self._save_safe_spot_debug(screenshot_bgr, (cx, cy), patch_size, search_region, output_path=debug_output_path)
+                            self._last_safe_spot = (cx, cy)
                         return (cx, cy)
 
             logger.warning("⚠️ [純白安全區偵測] 搜尋區域內未找到足夠尺寸的純白無文字背景區塊。")
-            if save_debug or self.debug:
-                self._save_safe_spot_debug(screenshot_bgr, None, patch_size, search_region)
+            if save_debug or (self.debug and self._last_safe_spot is not None):
+                self._save_safe_spot_debug(screenshot_bgr, None, patch_size, search_region, output_path=debug_output_path)
+                self._last_safe_spot = None
             return None
 
         except Exception as e:
             logger.error(f"Error finding safe white background spot: {e}", exc_info=True)
             return None
 
-    def _save_safe_spot_debug(self, screenshot_bgr: np.ndarray, safe_spot: tuple, patch_size: tuple, search_region: tuple):
+    def _save_safe_spot_debug(
+        self,
+        screenshot_bgr: np.ndarray,
+        safe_spot: tuple,
+        patch_size: tuple,
+        search_region: tuple,
+        output_path: str = "debug/safe_white_spot.png"
+    ):
         """Saves annotated debug image illustrating safe white patch detection result."""
         try:
             os.makedirs("debug", exist_ok=True)
@@ -565,9 +581,8 @@ class GreenDotDetector:
                 cv2.circle(dbg, (sx, sy), 4, (0, 0, 255), -1)
                 cv2.putText(dbg, f"SAFE SPOT ({sx},{sy})", (sx - 40, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            out_path = "debug/safe_white_spot.png"
-            cv2.imwrite(out_path, dbg)
-            logger.debug(f"Safe spot debug image saved to '{out_path}'.")
+            cv2.imwrite(output_path, dbg)
+            logger.debug(f"Safe spot debug image saved to '{output_path}'.")
         except Exception as e:
             logger.debug(f"Failed to save safe spot debug image: {e}")
 
