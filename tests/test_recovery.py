@@ -33,6 +33,7 @@ def test_recovery_manager_config_defaults():
     assert mgr.recover_cooldown_sec == 5.0
     assert mgr.display == ":99"
     assert mgr.fullscreen is True
+    assert mgr.scale_factor == 1.0
     assert mgr.get_password() == "test_yaml_password"
 
 

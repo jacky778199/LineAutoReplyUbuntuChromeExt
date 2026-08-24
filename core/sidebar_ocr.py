@@ -12,23 +12,48 @@ from typing import List, Tuple, Dict, Any, Optional
 
 import cv2
 import numpy as np
-import pytesseract
+
+try:
+    import pytesseract
+    TESSERACT_AVAILABLE = True
+except ImportError:
+    TESSERACT_AVAILABLE = False
+
+try:
+    from rapidocr_onnxruntime import RapidOCR
+    RAPID_OCR_AVAILABLE = True
+except ImportError:
+    RAPID_OCR_AVAILABLE = False
+
+try:
+    import opencc
+    OPENCC_AVAILABLE = True
+except ImportError:
+    OPENCC_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
 
 class SidebarOCR:
-    """Zero-Click Whitelist Pre-filtering using local Tesseract OCR."""
+    """Zero-Click Whitelist Pre-filtering using RapidOCR (with Tesseract fallback) and Traditional Chinese normalization."""
 
     def __init__(self, cooldown_seconds: int = 30):
         self.cooldown_seconds = cooldown_seconds
         self._non_whitelisted_cache: Dict[Tuple[int, int], float] = {}
+        self.rapid_ocr = RapidOCR() if RAPID_OCR_AVAILABLE else None
+        self.s2t_converter = opencc.OpenCC('s2t') if OPENCC_AVAILABLE else None
 
     def clean_ocr_text(self, text: str) -> str:
-        """Cleans whitespace and noisy OCR artifacts."""
+        """Cleans whitespace, noisy OCR artifacts, and converts Simplified Chinese to Traditional Chinese."""
         if not text:
             return ""
-        return "".join(text.split()).strip()
+        cleaned = "".join(text.split()).strip()
+        if self.s2t_converter:
+            try:
+                cleaned = self.s2t_converter.convert(cleaned)
+            except Exception:
+                pass
+        return cleaned
 
     def crop_sidebar_chat_item(
         self,
@@ -44,7 +69,7 @@ class SidebarOCR:
         cx, cy = int(dot_pos[0]), int(dot_pos[1])
         s_h, s_w = screenshot_bgr.shape[:2]
 
-        # Calculate bounding box for name & preview area
+        # Calculate bounding box for name & preview area (avoiding leftmost avatar)
         x_min = max(60, cx - 270)
         x_max = max(x_min + 30, cx - 15)
         y_min = max(0, cy - 32)
@@ -57,7 +82,7 @@ class SidebarOCR:
         return crop
 
     def preprocess_for_ocr(self, crop_bgr: np.ndarray) -> np.ndarray:
-        """Applies grayscale, contrast boost, and 2x enlargement for high OCR accuracy."""
+        """Applies grayscale, contrast boost, and 2x enlargement for fallback OCR."""
         if crop_bgr is None or crop_bgr.size == 0:
             return None
 
@@ -79,37 +104,51 @@ class SidebarOCR:
         dot_pos: Tuple[int, int]
     ) -> str:
         """
-        Runs local Tesseract OCR on the sidebar item at dot_pos.
+        Runs local OCR (RapidOCR or Tesseract fallback) on the sidebar item at dot_pos.
         Returns recognized string.
         """
         crop = self.crop_sidebar_chat_item(screenshot_bgr, dot_pos)
         if crop is None:
             return ""
 
-        prep = self.preprocess_for_ocr(crop)
-        if prep is None:
-            return ""
+        # 1. Primary: RapidOCR (High-accuracy Deep Learning OCR with 2.5x cubic upscale)
+        if self.rapid_ocr is not None:
+            try:
+                # 2.5x Bicubic upscale for small UI fonts (12-14px) to prevent stroke collapse
+                upscaled_crop = cv2.resize(crop, (0, 0), fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+                ocr_results, _ = self.rapid_ocr(upscaled_crop)
+                if ocr_results:
+                    recognized_lines = [item[1] for item in ocr_results if len(item) > 1 and item[1]]
+                    full_text = "".join(recognized_lines)
+                    clean = self.clean_ocr_text(full_text)
+                    if clean:
+                        return clean
+            except Exception as e:
+                logger.warning(f"RapidOCR 辨識側邊欄文字異常，降級為 Tesseract: {e}")
 
-        try:
-            # Recognize using Traditional Chinese + English
-            raw_ocr = pytesseract.image_to_string(
-                prep,
-                lang="chi_tra+eng",
-                config="--psm 6"
-            )
-            clean = self.clean_ocr_text(raw_ocr)
-            if not clean:
-                # Fallback with sparse psm 11
-                raw_ocr_sparse = pytesseract.image_to_string(
-                    prep,
-                    lang="chi_tra+eng",
-                    config="--psm 11"
-                )
-                clean = self.clean_ocr_text(raw_ocr_sparse)
-            return clean
-        except Exception as e:
-            logger.warning(f"OCR 辨識側邊欄文字時發生異常: {e}")
-            return ""
+        # 2. Fallback: Local Tesseract OCR
+        if TESSERACT_AVAILABLE:
+            prep = self.preprocess_for_ocr(crop)
+            if prep is not None:
+                try:
+                    raw_ocr = pytesseract.image_to_string(
+                        prep,
+                        lang="chi_tra+eng",
+                        config="--psm 6"
+                    )
+                    clean = self.clean_ocr_text(raw_ocr)
+                    if not clean:
+                        raw_ocr_sparse = pytesseract.image_to_string(
+                            prep,
+                            lang="chi_tra+eng",
+                            config="--psm 11"
+                        )
+                        clean = self.clean_ocr_text(raw_ocr_sparse)
+                    return clean
+                except Exception as e:
+                    logger.warning(f"Tesseract OCR 辨識側邊欄文字時發生異常: {e}")
+
+        return ""
 
     def is_dot_in_cooldown(self, dot_pos: Tuple[int, int]) -> bool:
         """Checks if a green dot coordinate is in non-whitelisted cooldown."""

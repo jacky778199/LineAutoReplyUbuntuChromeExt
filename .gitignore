@@ -18,6 +18,7 @@ debug_*.png
 # Logs
 *.log
 bot.log
+logs/
 
 # Environment variables & Local secret configurations
 config.yaml

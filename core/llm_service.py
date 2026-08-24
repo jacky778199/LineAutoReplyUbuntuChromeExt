@@ -71,8 +71,21 @@ class LLMService:
         target_sender = sender_name or contact_name
         system_prompt = self._get_system_prompt_for_contact(target_sender)
 
-        # Use recent 4000 characters to ensure context is rich but avoid exceeding token limits
-        chat_context = raw_chat_text[-4000:] if len(raw_chat_text) > 4000 else raw_chat_text
+        # Detect format: Desktop (lines starting with timestamp) vs Chrome Extension (newest at top)
+        # For Chrome extension, recent messages are at the TOP; for Desktop, at the BOTTOM.
+        is_desktop = False
+        sample_lines = [l.strip() for l in raw_chat_text.splitlines() if l.strip()][:10]
+        for sl in sample_lines:
+            if any(sl.startswith(f"{h:02d}:") or sl.startswith(f"{h}:") for h in range(24)):
+                is_desktop = True
+                break
+
+        if is_desktop:
+            chat_context = raw_chat_text[-4000:] if len(raw_chat_text) > 4000 else raw_chat_text
+            order_instruction = "請檢視對話紀錄最下方的最新訊息。"
+        else:
+            chat_context = raw_chat_text[:4000] if len(raw_chat_text) > 4000 else raw_chat_text
+            order_instruction = "請檢視對話紀錄最上方的最新訊息（最上方為最新訊息；若下方有標註 'Read' 或 '已讀' 則表示為本人發送）。"
 
         full_user_prompt = f"""
 你現在正在處理 LINE 聊天室中與【{target_sender}】的對話。
@@ -85,7 +98,7 @@ class LLMService:
 ==================================================
 
 【處理規則】：
-1. 請仔細檢視對話紀錄最下方的最新訊息。
+1. {order_instruction}
 2. 如果最新發出的訊息是我本人（{self.my_name}）發送的、或者該訊息不需要回覆（例如已結束話題、純貼圖或無須答覆），請**僅回傳** "[NO_REPLY]"。
 3. 如果最新訊息是由對方（{target_sender}）發出的，請根據上述的系統指示風格，針對他的最新訊息生成一句合適的回覆。
 4. 請直接輸出要回覆的純文字，嚴禁包含引號、註解或任何 Markdown 標記。

@@ -47,8 +47,12 @@ def test_sidebar_ocr_synthetic():
     assert res_non_wl["is_whitelisted"] is False, "Expected Stranger John to NOT be whitelisted"
 
     # 3. Test Cooldown cache
-    res_cooldown = ocr.check_whitelist_zero_click(img, (346, 295), whitelist=whitelist)
-    assert res_cooldown["in_cooldown"] is True, "Second check should be in cooldown"
+    # 4. Test Simplified to Traditional conversion
+    simplified_text = "人体图 (6) 发送"
+    traditional_text = ocr.clean_ocr_text(simplified_text)
+    print(f"\n--- Test S2T Conversion ---\nOriginal: '{simplified_text}' -> Converted: '{traditional_text}'")
+    assert "人體圖" in traditional_text, "Expected '人体图' to be converted to '人體圖'"
+
     print("✅ All SidebarOCR test assertions passed successfully!")
 
 

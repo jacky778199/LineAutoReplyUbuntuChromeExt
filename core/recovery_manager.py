@@ -40,6 +40,7 @@ class RecoveryManager:
         self.login_button_template_path = env_cfg.get("login_button_template_path", "assets/login_button.png")
         self.login_confidence = env_cfg.get("login_confidence", 0.45)
         self.fullscreen = env_cfg.get("fullscreen", True)
+        self.scale_factor = env_cfg.get("scale_factor", 1.0)
 
         self.notifier = TelegramNotifier(self.config)
         self.verification_timeout = notify_cfg.get("verification_timeout", 90)
@@ -219,6 +220,9 @@ class RecoveryManager:
             "--disable-infobars",
             f"--app={app_url}"
         ]
+        if self.scale_factor and float(self.scale_factor) != 1.0:
+            cmd.insert(1, f"--force-device-scale-factor={self.scale_factor}")
+            cmd.insert(2, "--high-dpi-support=1")
 
         env = os.environ.copy()
         env["DISPLAY"] = self.display

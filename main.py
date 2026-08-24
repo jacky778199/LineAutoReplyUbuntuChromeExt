@@ -82,26 +82,41 @@ def save_copy_failure_debug(
     )
 
 
-TIME_HEADER_PATTERN = re.compile(
-    r"^(?:(?:(?:上午|下午|AM|PM)\s*)?\b\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM|上午|下午))?)\s+(.*)$",
+TIME_ONLY_PATTERN = re.compile(
+    r"^(?:(?:上午|下午|AM|PM)\s*)?\b\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM|上午|下午))?$",
     re.IGNORECASE
 )
 
 DATE_HEADER_PATTERN = re.compile(
-    r"^(?:\d{4}[./年-]\d{1,2}[./月-]\d{1,2}(?:日)?(?:\s*星期[一二三四五六日天]|\s*\(?[一二三四五六日天]\)?)?|昨天|今天)$"
+    r"^(?:\d{4}[./年-]\d{1,2}[./月-]\d{1,2}(?:日)?(?:\s*星期[一二三四五六日天]|\s*\(?[一二三四五六日天]\)?)?|昨天|今天|Today|Yesterday|[A-Za-z]{3}\s+\d{1,2}\s*\([A-Za-z]{3}\))$",
+    re.IGNORECASE
 )
 
-NOISE_PATTERNS = [
+# Pattern that matches Desktop line: "HH:MM [AM/PM] Sender [Message...]"
+DESKTOP_LINE_PATTERN = re.compile(
+    r"^(?:(?:(?:上午|下午|AM|PM)\s*)?\b\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM|上午|下午))?)\s+(?!(?:AM|PM|上午|下午)\b)(\S+)(?:\s+(.*))?$",
+    re.IGNORECASE
+)
+
+NOISE_PATTERNS = {
     "Your OS version doesn't support this feature.",
     "Save as...",
     "Save",
     "Share",
-    "Read",
-    "已讀",
-    "未讀",
-]
+    "Unread messages below",
+    "以下為未讀訊息",
+    "Message unsent.",
+    "貼圖",
+    "圖片",
+    "照片",
+    "影片",
+    "語音訊息",
+    "檔案",
+}
 
 FILE_SIZE_PATTERN = re.compile(r"^(?:Size:\s*\d+(?:\.\d+)?\s*(?:KB|MB|GB)|Until:\s*)$", re.IGNORECASE)
+UNSENT_PATTERN = re.compile(r".*unsent a message.*", re.IGNORECASE)
+READ_INDICATORS = {"Read", "已讀", "未讀"}
 
 
 def clean_raw_line(line: str) -> str:
@@ -126,9 +141,118 @@ def is_noise_line(line: str) -> bool:
         return True
     if FILE_SIZE_PATTERN.match(cleaned):
         return True
+    if UNSENT_PATTERN.match(cleaned):
+        return True
     if cleaned.endswith(".pdf") or cleaned.endswith(".png") or cleaned.endswith(".jpg"):
         return True
     return False
+
+
+def is_desktop_format(lines: list) -> bool:
+    """Detect if lines follow Desktop format ('HH:MM Sender Message')."""
+    match_count = 0
+    for line in lines:
+        c = clean_raw_line(line)
+        if not c:
+            continue
+        if DESKTOP_LINE_PATTERN.match(c):
+            match_count += 1
+            if match_count >= 2:
+                return True
+    return False
+
+
+def parse_chrome_ext_format(raw_lines: list, whitelist: list, my_name: str, default_name: str) -> dict:
+    """
+    Parse LINE Chrome Extension clipboard text where the top contains the newest messages.
+    Identifies 'Read'/'已讀' underneath message to determine if it was sent by oneself.
+    """
+    matched_wl = None
+    if whitelist:
+        top_text = "\n".join(raw_lines[:50])
+        for wl in whitelist:
+            if wl in top_text or (len(wl) > 1 and wl.lower() in top_text.lower()):
+                matched_wl = wl
+                break
+        if not matched_wl:
+            full_text = "\n".join(raw_lines)
+            for wl in whitelist:
+                if wl in full_text or (len(wl) > 1 and wl.lower() in full_text.lower()):
+                    matched_wl = wl
+                    break
+
+    latest_msg_lines = []
+    latest_sender = None
+    is_me = False
+
+    i = 0
+    n = len(raw_lines)
+    while i < n:
+        line = clean_raw_line(raw_lines[i])
+        if not line:
+            i += 1
+            continue
+
+        if DATE_HEADER_PATTERN.match(line):
+            i += 1
+            continue
+
+        if line == "Unread messages below" or line == "以下為未讀訊息":
+            i += 1
+            continue
+
+        if TIME_ONLY_PATTERN.match(line):
+            i += 1
+            continue
+
+        if is_noise_line(line):
+            i += 1
+            continue
+
+        # Found substantive latest message line
+        latest_msg_lines.append(line)
+
+        # Look ahead for multiline continuations, Read status, or timestamp
+        j = i + 1
+        has_read = False
+        while j < n:
+            next_line = clean_raw_line(raw_lines[j])
+            if not next_line:
+                j += 1
+                continue
+            if next_line in READ_INDICATORS:
+                has_read = True
+                j += 1
+                continue
+            if TIME_ONLY_PATTERN.match(next_line):
+                break
+            if DATE_HEADER_PATTERN.match(next_line) or next_line in NOISE_PATTERNS or is_noise_line(next_line):
+                break
+            latest_msg_lines.append(next_line)
+            j += 1
+            if len(latest_msg_lines) >= 3:
+                break
+
+        if has_read:
+            is_me = True
+            latest_sender = my_name
+        else:
+            is_me = False
+            latest_sender = matched_wl or default_name
+        break
+
+    if not latest_sender:
+        latest_sender = matched_wl or default_name
+
+    is_whitelisted = (latest_sender in (whitelist or [])) or (matched_wl is not None)
+
+    return {
+        "sender": latest_sender,
+        "is_me": is_me,
+        "is_whitelisted": is_whitelisted,
+        "latest_message": "\n".join(latest_msg_lines).strip(),
+        "matched_whitelist_item": matched_wl
+    }
 
 
 def extract_latest_sender_info(
@@ -138,9 +262,8 @@ def extract_latest_sender_info(
     default_name: str = "未知好友"
 ) -> dict:
     """
-    Enhanced sender and message parser for LINE Desktop & Chrome Extension.
-    Supports global whitelist search, noise line filtering, and bottom-up
-    substantive message extraction.
+    Enhanced sender and message parser supporting both LINE Chrome Extension
+    (newest at top) and LINE Desktop (newest at bottom).
     """
     if not raw_text or not raw_text.strip():
         return {
@@ -152,100 +275,74 @@ def extract_latest_sender_info(
         }
 
     raw_lines = raw_text.splitlines()
-    cleaned_lines = []
-    for line in raw_lines:
-        c = clean_raw_line(line)
-        if c and not is_noise_line(c):
-            cleaned_lines.append(c)
 
-    # 1. Global whitelist match across the full text (not restricted to [:500])
-    matched_wl = None
-    if whitelist:
-        top_text = "\n".join(raw_lines[:100])
-        for wl in whitelist:
-            if wl in top_text or (len(wl) > 1 and wl.lower() in top_text.lower()):
-                matched_wl = wl
-                break
-        if not matched_wl:
+    if is_desktop_format(raw_lines):
+        matched_wl = None
+        if whitelist:
             for wl in whitelist:
-                if wl in raw_text or (len(wl) > 1 and wl.lower() in raw_text.lower()):
+                if wl in raw_text:
                     matched_wl = wl
                     break
 
-    # 2. Scan lines bottom-up to find timestamps or messages
-    latest_sender = None
-    is_me = False
-    latest_msg_lines = []
+        latest_sender = None
+        is_me = False
+        latest_msg_lines = []
 
-    for i in range(len(raw_lines) - 1, -1, -1):
-        line = clean_raw_line(raw_lines[i])
-        if not line or is_noise_line(line):
-            continue
-        if DATE_HEADER_PATTERN.match(line):
-            continue
+        for i in range(len(raw_lines) - 1, -1, -1):
+            line = clean_raw_line(raw_lines[i])
+            if not line or is_noise_line(line):
+                continue
+            if DATE_HEADER_PATTERN.match(line):
+                continue
 
-        m = TIME_HEADER_PATTERN.match(line)
-        if m:
-            rest = m.group(1).strip()
-            sender_name = None
-            msg_part = ""
+            m = DESKTOP_LINE_PATTERN.match(line)
+            if m:
+                time_prefix = re.match(r"^(?:(?:(?:上午|下午|AM|PM)\s*)?\b\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM|上午|下午))?)\s+", line, re.IGNORECASE)
+                rest = line[time_prefix.end():].strip() if time_prefix else line
 
-            if my_name and (rest == my_name or rest.startswith(my_name + " ") or rest.startswith(my_name + "\t") or rest.startswith(my_name)):
-                sender_name = my_name
-                msg_part = rest[len(my_name):].strip()
-            else:
-                for wl in (whitelist or []):
-                    if rest == wl or rest.startswith(wl + " ") or rest.startswith(wl + "\t") or rest.startswith(wl):
-                        sender_name = wl
-                        msg_part = rest[len(wl):].strip()
-                        break
+                sender_name = None
+                msg_part = ""
 
-            if not sender_name:
-                parts = rest.split(None, 1)
-                sender_name = parts[0]
-                msg_part = parts[1] if len(parts) > 1 else ""
+                if my_name and (rest == my_name or rest.startswith(my_name + " ") or rest.startswith(my_name + "\t")):
+                    sender_name = my_name
+                    msg_part = rest[len(my_name):].strip()
+                else:
+                    for wl in (whitelist or []):
+                        if rest == wl or rest.startswith(wl + " ") or rest.startswith(wl + "\t"):
+                            sender_name = wl
+                            msg_part = rest[len(wl):].strip()
+                            break
 
-            latest_sender = sender_name
-            if my_name and (sender_name == my_name or (my_name in sender_name)):
-                is_me = True
+                if not sender_name:
+                    parts = rest.split(None, 1)
+                    sender_name = parts[0]
+                    msg_part = parts[1] if len(parts) > 1 else ""
 
-            if msg_part and not is_noise_line(msg_part):
-                latest_msg_lines.insert(0, msg_part)
-            break
-        else:
-            latest_msg_lines.insert(0, line)
-            if len(latest_msg_lines) >= 3:
+                latest_sender = sender_name
+                if my_name and (sender_name == my_name or (my_name in sender_name)):
+                    is_me = True
+
+                if msg_part and not is_noise_line(msg_part):
+                    latest_msg_lines.insert(0, msg_part)
                 break
+            else:
+                if len(latest_msg_lines) < 5:
+                    latest_msg_lines.insert(0, line)
 
-    # 3. Fallback when no standard timestamp header exists (common in Chrome extension 1-on-1 chat)
-    if not latest_sender:
-        if matched_wl:
-            latest_sender = matched_wl
-        else:
-            latest_sender = default_name
+        if not latest_sender:
+            latest_sender = matched_wl or default_name
 
-    # Determine whitelist status
-    if matched_wl:
-        is_whitelisted = True
-    elif whitelist:
-        is_whitelisted = (latest_sender in whitelist)
+        is_whitelisted = (latest_sender in (whitelist or [])) or (matched_wl is not None)
+        return {
+            "sender": latest_sender,
+            "is_me": is_me,
+            "is_whitelisted": is_whitelisted,
+            "latest_message": "\n".join(latest_msg_lines).strip(),
+            "matched_whitelist_item": matched_wl
+        }
     else:
-        is_whitelisted = True
+        return parse_chrome_ext_format(raw_lines, whitelist, my_name, default_name)
 
-    latest_msg_text = "\n".join(latest_msg_lines).strip()
-    if not latest_msg_text and cleaned_lines:
-        latest_msg_text = cleaned_lines[-1]
-
-    if my_name and latest_msg_text.startswith(my_name + ":"):
-        is_me = True
-
-    return {
-        "sender": latest_sender,
-        "is_me": is_me,
-        "is_whitelisted": is_whitelisted,
-        "latest_message": latest_msg_text,
-        "matched_whitelist_item": matched_wl
-    }
 
 
 def extract_contact_name_from_raw_text(raw_text: str, whitelist: list, default_name: str = "未知好友") -> str:
@@ -343,13 +440,6 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                                     f"🚫 [{session_id}] [點前 OCR 攔截] 側邊欄文字: '{rec_text}' 不在白名單中！"
                                     f"【絕不點擊進入，永久保持未讀綠點/手機紅點】"
                                 )
-                                chat_logger.archive_failure(
-                                    reason_code="ZERO_CLICK_NON_WHITELIST",
-                                    reason_desc=f"點前 OCR 辨識非白名單 ('{rec_text}')，保持未讀",
-                                    session_data={"session_id": session_id, "dot_pos": (cx, cy), "recognized_text": rec_text},
-                                    dot_pos=(cx, cy),
-                                    save_screenshot=False
-                                )
                             continue
                         else:
                             logger.info(
@@ -417,15 +507,6 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                     # 5. Check Whitelist (雙重保險防護)
                     if whitelist and not is_whitelisted:
                         logger.warning(f"[{session_id}] ⚠️ 對象 '{latest_sender}' 不在白名單中，跳過不處理。自動切回聊天列表...")
-                        chat_logger.archive_failure(
-                            reason_code="NOT_WHITELISTED",
-                            reason_desc=f"對象 '{latest_sender}' 不在白名單中",
-                            session_data=sender_info,
-                            raw_text=raw_text,
-                            dot_pos=(cx, cy),
-                            safe_click_pos=safe_chat_pos,
-                            save_screenshot=True
-                        )
                         notifier.notify_manual_action_needed(
                             contact_name=latest_sender,
                             latest_message=sender_info.get("latest_message", ""),
@@ -435,7 +516,9 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                         continue
 
                     # Prevent duplicate processing of identical recent raw text
-                    text_sig = hash(raw_text[-300:])
+                    # Format-aware signature: Uses latest sender, latest message snippet, and top/bottom text window
+                    sig_window = raw_text[-300:] if is_desktop_format(raw_text.splitlines()) else raw_text[:300]
+                    text_sig = hash((latest_sender, sender_info.get("latest_message", ""), sig_window))
                     if text_sig in processed_signatures:
                         logger.info(f"[{session_id}] 此對話內容近期已處理過，跳過防重複發送。自動解除焦點...")
                         chat_logger.archive_failure(
