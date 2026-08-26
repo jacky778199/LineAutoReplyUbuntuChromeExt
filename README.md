@@ -68,6 +68,15 @@
 * 當主模型配額不足或連線逾時時，自動無縫切換至備用模型。
 * 支援針對不同好友或群組設定專屬 Prompt（語氣風格、繁體中文、英語、泰語等）。
 
+### 11. LLM 提示詞注入防禦與資料邊界隔離 (Prompt Injection Defense) 🔥
+* **`<untrusted_chat_history>` 邊界防護**：將外部聊天內容封裝於專屬 XML 標籤內，並對惡意標籤跳脫逃逸進行即時消毒過濾。
+* **Prompt 越獄與敏感資訊防護**：嚴格指示模型忽略聊天記錄中任何企圖覆寫系統規則、索取 Prompt 或金鑰的指令，杜絕對抗性注入攻擊。
+* **輸出清理過濾 (`_clean_reply_text`)**：自動剔除多餘的 Markdown 代碼標記（` ``` `）與外層包裹引號，確保回覆為純淨文字。
+
+### 12. `.env` 機密憑證集中管理與大小寫相容載入 🔥
+* **杜絕 Git 程式碼外洩**：所有敏感憑證（LINE Messaging API Token、User ID、LINE 登入帳密、OpenAI Key、Telegram Token）皆支援集中於 `.env` 管理（已被 `.gitignore` 預設排除）。
+* **內建無外部依賴載入器 (`core.load_dotenv`)**：相容大寫 (`LINE_PASSWORD`) 與小寫 (`line_password`) 命名，開箱即用。
+
 ---
 
 ## 🛠️ 安裝與環境準備
@@ -114,7 +123,20 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. 設定 `config.yaml`
+### 4. 設定機密環境變數 `.env` (推薦)
+在專案根目錄建立 `.env` 檔案存放敏感金鑰（此檔案已被 `.gitignore` 忽略）：
+```bash
+# .env
+LINE_CHANNEL_ACCESS_TOKEN="您的_LINE_CHANNEL_ACCESS_TOKEN"
+LINE_USER_ID="您的_LINE_USER_ID"
+line_email="your_line_email@example.com"
+line_password="your_line_password"
+OPENAI_API_KEY="sk-..."
+TELEGRAM_BOT_TOKEN="123456:ABC..."
+```
+> 💡 建議設定嚴格權限確保檔案僅供本人讀寫：`chmod 600 .env`
+
+### 5. 設定 `config.yaml`
 複製範本檔建立您的設定檔：
 ```bash
 cp config.example.yaml config.yaml
@@ -152,12 +174,18 @@ python main.py --test-notify
 python main.py --test-recover
 ```
 
-### 5. 以乾執行模式 (Dry-Run) 測試（不實際送出訊息）
+### 5. 測試 LINE 主動推播訊息 (Push Message)
+```bash
+python send_test_message.py --message "🤖 這是一條來自 LINE AutoReplyBot 的測試主動推播！"
+```
+* 自動讀取 `.env` 中的 `LINE_CHANNEL_ACCESS_TOKEN` 與 `LINE_USER_ID`。
+
+### 6. 以乾執行模式 (Dry-Run) 測試（不實際送出訊息）
 ```bash
 python main.py --dry-run
 ```
 
-### 6. 正式啟動自動回覆機器人
+### 7. 正式啟動自動回覆機器人
 ```bash
 python main.py
 ```
@@ -170,13 +198,14 @@ python main.py
 AutoReplyMessage/
 ├── assets/                  # 視覺辨識樣板圖片 (sidebar_*.png, login_*.png, green_dot_*.png)
 ├── core/
+│   ├── __init__.py          # 核心套件初始化與 .env 環境變數自動載入器
 │   ├── sidebar_ocr.py       # 點前 Tesseract OCR 視覺白名單預判 (Zero-Click)
 │   ├── chat_logger.py       # 5MB 日誌輪轉、回覆歷史與失敗封包自動存檔 (ChatLogger)
 │   ├── clipboard_manager.py # 多編碼安全剪貼簿管理器 (xclip / pyperclip / Lock)
 │   ├── environment_validator.py # 螢幕左側 400px 基線與側邊欄雙錨點檢測
 │   ├── notifier.py          # Telegram 待處理訊息、異常警報與 2FA 驗證碼推播
 │   ├── recovery_manager.py  # Chrome LINE 崩潰重啟、雙錨點自動登入、視窗全螢幕 (F11)
-│   ├── llm_service.py       # 雙 LLM 引擎 (Vertex AI 主 / OpenAI 備援)
+│   ├── llm_service.py       # 雙 LLM 引擎 (Vertex AI 主 / OpenAI 備援，含 Prompt Injection 防禦)
 │   ├── vision_detector.py   # 側邊欄雙錨點插值 + HSV 色塊過濾 + 樣板比對 + 座標網格生成
 │   └── window_helper.py     # 視窗幾何計算、SafeChatHistory、SafeInputBox、解除焦點
 ├── logs/                    # 執行日誌與歸檔庫 (已被 .gitignore 忽略)
@@ -185,7 +214,9 @@ AutoReplyMessage/
 │   └── failures/            # 失敗與略過事件專屬封包 (summary.json, raw_chat.txt, screenshot.png)
 ├── debug/                   # 偵錯暫存檔案與最新對話文字
 ├── tests/                   # 單元測試集 (OCR 預判、對話解析、Log 存檔、雙錨點恢復等)
+├── .env                     # 機密環境變數檔案 (已被 .gitignore 忽略，不入版本庫)
 ├── config.example.yaml      # 設定檔安全範本
+├── send_test_message.py     # LINE Messaging API 主動推播測試腳本
 ├── main.py                  # 機器人主入口程式
 ├── requirements.txt         # Python 依賴清單 (包含 pytesseract, opencv, google-genai)
 └── README.md                # 專案說明文件

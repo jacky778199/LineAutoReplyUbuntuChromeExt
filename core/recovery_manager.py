@@ -51,11 +51,11 @@ class RecoveryManager:
 
     def get_password(self) -> str:
         """Returns LINE password from environment variable (preferred) or config."""
-        return os.environ.get("LINE_PASSWORD") or self.line_password or ""
+        return os.environ.get("LINE_PASSWORD") or os.environ.get("line_password") or self.line_password or ""
 
     def get_email(self) -> str:
         """Returns LINE email from environment variable or config."""
-        return os.environ.get("LINE_EMAIL") or self.line_email or ""
+        return os.environ.get("LINE_EMAIL") or os.environ.get("line_email") or self.line_email or ""
 
     def is_chrome_running(self) -> bool:
         """Checks if Chrome or LINE extension process is running."""

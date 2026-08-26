@@ -1,3 +1,4 @@
+import os
 import sys
 import argparse
 from linebot.v3.messaging import (
@@ -9,10 +10,6 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.messaging.rest import ApiException
 
-# LINE Channel Access Token
-CHANNEL_ACCESS_TOKEN = 'qcRwFHXZRhnnqG43DWyBwqdQCscn2IlUXrG65uAZEZ3gHQDFP4Hw89jgCzpg75cMVu2OjPeiKXplFOk7QxfM5z2sFnSHR7uPqBQDEdO8Iq+mrBWAD9hAfhKswVM/T7R5jeV/WKTn4zZftjO/Mk8dvgdB04t89/1O/w1cDnyilFU='
-DEFAULT_USER_ID = 'U645e7f3d2ddf26bda322be963bea689a'
-
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding='utf-8')
@@ -20,15 +17,44 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-def send_push_message(user_id: str, text: str):
+def load_dotenv_if_exists(dotenv_path: str = ".env"):
+    """Lightweight .env loader without external dependencies."""
+    if os.path.exists(dotenv_path):
+        try:
+            with open(dotenv_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+        except Exception:
+            pass
+
+load_dotenv_if_exists()
+
+def send_push_message(access_token: str, user_id: str, text: str):
     """Sends a proactive push message using LINE Messaging API v3."""
+    if not access_token:
+        print("❌ [錯誤] 未提供 LINE Channel Access Token！")
+        print("💡 請設定環境變數 LINE_CHANNEL_ACCESS_TOKEN，或透過參數 --token 指定。")
+        sys.exit(1)
+
+    if not user_id:
+        print("❌ [錯誤] 未提供目標 LINE User ID！")
+        print("💡 請設定環境變數 LINE_USER_ID，或透過參數 --user-id 指定。")
+        sys.exit(1)
+
     print(f"==================================================")
     print(f" 正在發送 Push Message ")
     print(f" Target User ID : {user_id}")
     print(f" Message Content: {text}")
     print(f"==================================================")
 
-    configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
+    configuration = Configuration(access_token=access_token)
 
     try:
         with ApiClient(configuration) as api_client:
@@ -50,8 +76,22 @@ def send_push_message(user_id: str, text: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LINE Push Message 測試腳本")
-    parser.add_argument("--user-id", default=DEFAULT_USER_ID, help="目標 LINE User ID (格式如 Uxxxx...)")
-    parser.add_argument("--message", default="🤖 這是一條來自 LINE AutoReplyBot 的測試主動推播訊息 (Push Message)！", help="測試發送內容")
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") or os.environ.get("line_channel_access_token", ""),
+        help="LINE Channel Access Token (或由環境變數 LINE_CHANNEL_ACCESS_TOKEN 提供)"
+    )
+    parser.add_argument(
+        "--user-id",
+        default=os.environ.get("LINE_USER_ID") or os.environ.get("line_user_id", ""),
+        help="目標 LINE User ID (格式如 Uxxxx... 或由環境變數 LINE_USER_ID 提供)"
+    )
+    parser.add_argument(
+        "--message",
+        default="🤖 這是一條來自 LINE AutoReplyBot 的測試主動推播訊息 (Push Message)！",
+        help="測試發送內容"
+    )
 
     args = parser.parse_args()
-    send_push_message(args.user_id, args.message)
+    send_push_message(args.token, args.user_id, args.message)
+

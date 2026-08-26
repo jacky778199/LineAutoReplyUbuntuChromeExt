@@ -27,14 +27,22 @@ def test_recovery_manager_config_defaults():
             "fullscreen": True
         }
     }
-    mgr = RecoveryManager(config)
-    assert mgr.auto_recover is True
-    assert mgr.max_recover_attempts == 3
-    assert mgr.recover_cooldown_sec == 5.0
-    assert mgr.display == ":99"
-    assert mgr.fullscreen is True
-    assert mgr.scale_factor == 1.0
-    assert mgr.get_password() == "test_yaml_password"
+    old_p1 = os.environ.pop("LINE_PASSWORD", None)
+    old_p2 = os.environ.pop("line_password", None)
+    try:
+        mgr = RecoveryManager(config)
+        assert mgr.auto_recover is True
+        assert mgr.max_recover_attempts == 3
+        assert mgr.recover_cooldown_sec == 5.0
+        assert mgr.display == ":99"
+        assert mgr.fullscreen is True
+        assert mgr.scale_factor == 1.0
+        assert mgr.get_password() == "test_yaml_password"
+    finally:
+        if old_p1 is not None:
+            os.environ["LINE_PASSWORD"] = old_p1
+        if old_p2 is not None:
+            os.environ["line_password"] = old_p2
 
 
 def test_recovery_manager_env_var_precedence():
