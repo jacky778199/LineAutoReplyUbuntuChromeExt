@@ -73,9 +73,11 @@
 * **Prompt 越獄與敏感資訊防護**：嚴格指示模型忽略聊天記錄中任何企圖覆寫系統規則、索取 Prompt 或金鑰的指令，杜絕對抗性注入攻擊。
 * **輸出清理過濾 (`_clean_reply_text`)**：自動剔除多餘的 Markdown 代碼標記（` ``` `）與外層包裹引號，確保回覆為純淨文字。
 
-### 12. `.env` 機密憑證集中管理與大小寫相容載入 🔥
-* **杜絕 Git 程式碼外洩**：所有敏感憑證（LINE Messaging API Token、User ID、LINE 登入帳密、OpenAI Key、Telegram Token）皆支援集中於 `.env` 管理（已被 `.gitignore` 預設排除）。
-* **內建無外部依賴載入器 (`core.load_dotenv`)**：相容大寫 (`LINE_PASSWORD`) 與小寫 (`line_password`) 命名，開箱即用。
+### 13. 長遠事實與偏好記憶庫 (`MemoryManager` / Option A) 🔥
+* **對話背景與人設持久化**：為每位好友建立專屬的長期記憶檔案（`logs/memories/<contact_name>.json`）。
+* **Prompt 動態注入**：生成回覆時自動帶入歷史累積的事實、習慣、語言與飲食偏好，讓對話越聊越有默契。
+* **背景非同步自動萃取**：訊息送出後，背景自動觸發 LLM 分析最新對話，自動新增、覆蓋或更新事實，完全不增加 LINE 回應延遲。
+* **純文字 JSON 管理**：格式清晰透明，支援隨時手動檢視與編修。
 
 ---
 
@@ -116,14 +118,43 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now xvfb-desktop
 ```
 
-### 3. 建立 Python 虛擬環境與安裝套件
+### 3. 配置 LINE Bot 常駐 Systemd 服務 (推薦)
+建立 `/etc/systemd/system/line-bot.service`：
+```ini
+[Unit]
+Description=LINE Auto-Reply Bot Service
+After=network.target xvfb-desktop.service
+Wants=xvfb-desktop.service
+
+[Service]
+Type=simple
+User=dinghonjay
+WorkingDirectory=/home/dinghonjay/AutoReplyMessage
+Environment="DISPLAY=:99"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/dinghonjay/AutoReplyMessage/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+啟用並啟動服務：
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable line-bot.service
+sudo systemctl start line-bot.service
+```
+
+### 4. 建立 Python 虛擬環境與安裝套件
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. 設定機密環境變數 `.env` (推薦)
+### 5. 設定機密環境變數 `.env` (推薦)
 在專案根目錄建立 `.env` 檔案存放敏感金鑰（此檔案已被 `.gitignore` 忽略）：
 ```bash
 # .env
@@ -136,7 +167,7 @@ TELEGRAM_BOT_TOKEN="123456:ABC..."
 ```
 > 💡 建議設定嚴格權限確保檔案僅供本人讀寫：`chmod 600 .env`
 
-### 5. 設定 `config.yaml`
+### 6. 設定 `config.yaml`
 複製範本檔建立您的設定檔：
 ```bash
 cp config.example.yaml config.yaml
@@ -144,8 +175,9 @@ cp config.example.yaml config.yaml
 開啟 `config.yaml` 進行設定：
 * **`llm`**：設定 GCP Project ID (Vertex AI) 與備用 LLM API Key / Base URL。
 * **`bot.my_name`**：設定您的 LINE 暱稱。
-* **`bot.whitelist`**：填入允許自動回覆的好友或群組名稱白名單（未在名單內的聯絡人將被點前 OCR 攔截，永久保持未讀）。
+* **`bot.whitelist`**：填入允許自動回覆的好友或群組名稱白名單（支援點前 OCR 字元層級模糊比對）。
 * **`bot.contact_prompts`**：設定特定對象的專屬對話風格（Persona）。
+* **`memory`**：設定長遠事實記憶開關（預設開啟，單一好友上限 20 條）。
 * **`ui`**：設定綠點辨識模式（`hybrid` / `color_blob` / `template`）、色塊面積範圍（預設 `248` ~ `356` px）與樣板信心度。
 * **`notification`**：設定 Telegram Bot Token 與 Chat ID。
 
@@ -185,9 +217,9 @@ python send_test_message.py --message "🤖 這是一條來自 LINE AutoReplyBot
 python main.py --dry-run
 ```
 
-### 7. 正式啟動自動回覆機器人
+### 7. 查看 Systemd 服務即時執行日誌
 ```bash
-python main.py
+journalctl -u line-bot -f
 ```
 
 ---
@@ -199,21 +231,23 @@ AutoReplyMessage/
 ├── assets/                  # 視覺辨識樣板圖片 (sidebar_*.png, login_*.png, green_dot_*.png)
 ├── core/
 │   ├── __init__.py          # 核心套件初始化與 .env 環境變數自動載入器
-│   ├── sidebar_ocr.py       # 點前 Tesseract OCR 視覺白名單預判 (Zero-Click)
+│   ├── sidebar_ocr.py       # 點前 OCR 視覺白名單預判 (含繁中 3.5x 銳化與字元級模糊容錯比對)
+│   ├── memory_manager.py    # 長遠事實與偏好記憶管理器 (Fact & Preference JSON Memory)
 │   ├── chat_logger.py       # 5MB 日誌輪轉、回覆歷史與失敗封包自動存檔 (ChatLogger)
 │   ├── clipboard_manager.py # 多編碼安全剪貼簿管理器 (xclip / pyperclip / Lock)
 │   ├── environment_validator.py # 螢幕左側 400px 基線與側邊欄雙錨點檢測
 │   ├── notifier.py          # Telegram 待處理訊息、異常警報與 2FA 驗證碼推播
 │   ├── recovery_manager.py  # Chrome LINE 崩潰重啟、雙錨點自動登入、視窗全螢幕 (F11)
-│   ├── llm_service.py       # 雙 LLM 引擎 (Vertex AI 主 / OpenAI 備援，含 Prompt Injection 防禦)
+│   ├── llm_service.py       # 雙 LLM 引擎 (Vertex AI 主 / OpenAI 備援，含 Memory 注入與防注入)
 │   ├── vision_detector.py   # 側邊欄雙錨點插值 + HSV 色塊過濾 + 樣板比對 + 座標網格生成
 │   └── window_helper.py     # 視窗幾何計算、SafeChatHistory、SafeInputBox、解除焦點
 ├── logs/                    # 執行日誌與歸檔庫 (已被 .gitignore 忽略)
 │   ├── bot.log              # 5MB 循環輪轉日常日誌 (bot.log.1, bot.log.2)
 │   ├── reply_history.log    # 成功回覆歷程清單
+│   ├── memories/            # 好友獨立長遠事實記憶 JSON 庫 (如 Eyeyupy.json, 丁竑福.json)
 │   └── failures/            # 失敗與略過事件專屬封包 (summary.json, raw_chat.txt, screenshot.png)
-├── debug/                   # 偵錯暫存檔案與最新對話文字
-├── tests/                   # 單元測試集 (OCR 預判、對話解析、Log 存檔、雙錨點恢復等)
+├── debug/                   # 偵錯暫存檔案與最新對話文字 (sidebar_preview.png 等)
+├── tests/                   # 單元測試集 (OCR 預判、對話解析、Log 存檔、記憶管理、雙錨點恢復等)
 ├── .env                     # 機密環境變數檔案 (已被 .gitignore 忽略，不入版本庫)
 ├── config.example.yaml      # 設定檔安全範本
 ├── send_test_message.py     # LINE Messaging API 主動推播測試腳本
@@ -231,6 +265,7 @@ AutoReplyMessage/
 python tests/test_sidebar_ocr.py     # 驗證點前 OCR 視覺預判與冷卻快取
 python tests/test_sender_parser.py   # 驗證長對話解析、雜訊過濾與白名單匹配
 python tests/test_chat_logger.py     # 驗證 Log 輪轉與失敗診斷封包歸檔
+python tests/test_memory_manager.py  # 驗證長遠記憶 CRUD 與 Prompt 格式化
 python tests/test_notifier.py        # 驗證 Telegram 通知模組
 python tests/test_recovery.py        # 驗證環境自癒與雙錨點插值
 ```

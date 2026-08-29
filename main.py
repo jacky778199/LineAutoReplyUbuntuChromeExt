@@ -585,6 +585,14 @@ def run_bot(config: dict, dry_run: bool = False, debug: bool = False):
                             provider=llm_diag.get("provider", ""),
                             model_name=llm_diag.get("model", "")
                         )
+                        # Trigger background memory update
+                        if llm.memory_manager.enabled:
+                            import threading
+                            threading.Thread(
+                                target=llm.memory_manager.update_memory_from_chat,
+                                args=(latest_sender, raw_text, llm),
+                                daemon=True
+                            ).start()
                     else:
                         logger.error(f"[{session_id}] ❌ 訊息貼上與送出失敗！")
                         chat_logger.archive_failure(

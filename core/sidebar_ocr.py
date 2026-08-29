@@ -55,48 +55,110 @@ class SidebarOCR:
                 pass
         return cleaned
 
+    def crop_sidebar_regions(
+        self,
+        screenshot_bgr: np.ndarray,
+        dot_pos: Tuple[int, int]
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """
+        Crops separated regions:
+        1. Name crop (Upper half, single line)
+        2. Message preview crop (Lower half)
+        """
+        if screenshot_bgr is None:
+            return None, None
+
+        cx, cy = int(dot_pos[0]), int(dot_pos[1])
+        s_h, s_w = screenshot_bgr.shape[:2]
+
+        # Calculate horizontal text span avoiding left avatar
+        x_min = max(60, cx - 270)
+        x_max = max(x_min + 30, cx - 15)
+
+        # 1. Contact Name region (Upper half: cy - 32 to cy - 2)
+        y_name_min = max(0, cy - 32)
+        y_name_max = max(0, cy - 2)
+        name_crop = screenshot_bgr[y_name_min:y_name_max, x_min:x_max] if y_name_max > y_name_min else None
+
+        # 2. Message Preview region (Lower half: cy - 2 to cy + 28)
+        y_msg_min = max(0, cy - 2)
+        y_msg_max = min(s_h, cy + 28)
+        msg_crop = screenshot_bgr[y_msg_min:y_msg_max, x_min:x_max] if y_msg_max > y_msg_min else None
+
+        return name_crop, msg_crop
+
     def crop_sidebar_chat_item(
         self,
         screenshot_bgr: np.ndarray,
         dot_pos: Tuple[int, int]
     ) -> Optional[np.ndarray]:
-        """
-        Crops the text region (contact name + message preview) to the left of the green dot.
-        """
+        """Crops full text region (name + preview) with generous vertical bounds."""
         if screenshot_bgr is None:
             return None
-
         cx, cy = int(dot_pos[0]), int(dot_pos[1])
         s_h, s_w = screenshot_bgr.shape[:2]
-
-        # Calculate bounding box for name & preview area (avoiding leftmost avatar)
         x_min = max(60, cx - 270)
         x_max = max(x_min + 30, cx - 15)
-        y_min = max(0, cy - 32)
-        y_max = min(s_h, cy + 28)
+        # Generous vertical bounds (42px above green dot to ensure top name is never clipped)
+        y_min = max(0, cy - 42)
+        y_max = min(s_h, cy + 32)
+        crop = screenshot_bgr[y_min:y_max, x_min:x_max] if (x_max > x_min and y_max > y_min) else None
+        
+        # Save debug image for verification
+        if crop is not None and crop.size > 0:
+            try:
+                cv2.imwrite("debug/sidebar_preview.png", crop)
+            except Exception:
+                pass
 
-        if x_max <= x_min or y_max <= y_min:
-            return None
-
-        crop = screenshot_bgr[y_min:y_max, x_min:x_max]
         return crop
 
     def preprocess_for_ocr(self, crop_bgr: np.ndarray) -> np.ndarray:
-        """Applies grayscale, contrast boost, and 2x enlargement for fallback OCR."""
+        """
+        Applies high-resolution 3.5x bicubic upscaling, unsharp mask sharpening,
+        CLAHE contrast normalization, and Otsu adaptive binarization to prevent stroke collapse.
+        """
         if crop_bgr is None or crop_bgr.size == 0:
             return None
 
         # Convert to grayscale
         gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
 
-        # 2x enlargement for small font clarity
-        resized = cv2.resize(gray, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        # 1. 3.5x Bicubic enlargement for fine strokes clarity
+        resized = cv2.resize(gray, (0, 0), fx=3.5, fy=3.5, interpolation=cv2.INTER_CUBIC)
 
-        # Normalize contrast
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(resized)
+        # 2. Unsharp Masking to sharpen character edges
+        gaussian = cv2.GaussianBlur(resized, (0, 0), 2.0)
+        sharpened = cv2.addWeighted(resized, 1.6, gaussian, -0.6, 0)
 
-        return enhanced
+        # 3. CLAHE local contrast enhancement
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        enhanced = clahe.apply(sharpened)
+
+        # 4. Otsu Adaptive Binarization
+        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        return binary
+
+    def recognize_single_line_text(self, crop_bgr: np.ndarray) -> str:
+        """Runs single-line optimized OCR (PSM 7) on a single horizontal line crop."""
+        if crop_bgr is None or crop_bgr.size == 0 or not TESSERACT_AVAILABLE:
+            return ""
+        prep = self.preprocess_for_ocr(crop_bgr)
+        if prep is None:
+            return ""
+        try:
+            # PSM 7: Treat the image as a single text line
+            raw = pytesseract.image_to_string(prep, lang="chi_tra+eng", config="--psm 7 --oem 1")
+            clean = self.clean_ocr_text(raw)
+            if not clean:
+                # PSM 8: Single word fallback
+                raw_w = pytesseract.image_to_string(prep, lang="chi_tra+eng", config="--psm 8 --oem 1")
+                clean = self.clean_ocr_text(raw_w)
+            return clean
+        except Exception as e:
+            logger.debug(f"Single-line OCR failed: {e}")
+            return ""
 
     def recognize_chat_item_text(
         self,
@@ -104,49 +166,47 @@ class SidebarOCR:
         dot_pos: Tuple[int, int]
     ) -> str:
         """
-        Runs local OCR (RapidOCR or Tesseract fallback) on the sidebar item at dot_pos.
-        Returns recognized string.
+        Runs local OCR on the sidebar item crop (including both name and preview text).
+        Uses RapidOCR if available, or Tesseract with multi-PSM fallback.
         """
-        crop = self.crop_sidebar_chat_item(screenshot_bgr, dot_pos)
-        if crop is None:
+        combined_crop = self.crop_sidebar_chat_item(screenshot_bgr, dot_pos)
+        if combined_crop is None:
             return ""
 
-        # 1. Primary: RapidOCR (High-accuracy Deep Learning OCR with 2.5x cubic upscale)
+        # 1. Primary: RapidOCR if available
         if self.rapid_ocr is not None:
             try:
-                # 2.5x Bicubic upscale for small UI fonts (12-14px) to prevent stroke collapse
-                upscaled_crop = cv2.resize(crop, (0, 0), fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+                upscaled_crop = cv2.resize(combined_crop, (0, 0), fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
                 ocr_results, _ = self.rapid_ocr(upscaled_crop)
                 if ocr_results:
                     recognized_lines = [item[1] for item in ocr_results if len(item) > 1 and item[1]]
-                    full_text = "".join(recognized_lines)
-                    clean = self.clean_ocr_text(full_text)
+                    clean = self.clean_ocr_text("".join(recognized_lines))
                     if clean:
                         return clean
             except Exception as e:
-                logger.warning(f"RapidOCR 辨識側邊欄文字異常，降級為 Tesseract: {e}")
+                logger.warning(f"RapidOCR 辨識側邊欄文字異常: {e}")
 
-        # 2. Fallback: Local Tesseract OCR
+        # 2. Fallback: Local Tesseract OCR on full item
         if TESSERACT_AVAILABLE:
-            prep = self.preprocess_for_ocr(crop)
+            prep = self.preprocess_for_ocr(combined_crop)
             if prep is not None:
+                # Try PSM 6 (uniform block of text)
                 try:
-                    raw_ocr = pytesseract.image_to_string(
-                        prep,
-                        lang="chi_tra+eng",
-                        config="--psm 6"
-                    )
+                    raw_ocr = pytesseract.image_to_string(prep, lang="chi_tra+eng", config="--psm 6")
                     clean = self.clean_ocr_text(raw_ocr)
-                    if not clean:
-                        raw_ocr_sparse = pytesseract.image_to_string(
-                            prep,
-                            lang="chi_tra+eng",
-                            config="--psm 11"
-                        )
-                        clean = self.clean_ocr_text(raw_ocr_sparse)
-                    return clean
-                except Exception as e:
-                    logger.warning(f"Tesseract OCR 辨識側邊欄文字時發生異常: {e}")
+                    if clean:
+                        return clean
+                except Exception:
+                    pass
+
+                # Try PSM 11 (sparse text)
+                try:
+                    raw_ocr_sparse = pytesseract.image_to_string(prep, lang="chi_tra+eng", config="--psm 11")
+                    clean_s = self.clean_ocr_text(raw_ocr_sparse)
+                    if clean_s:
+                        return clean_s
+                except Exception:
+                    pass
 
         return ""
 
@@ -207,16 +267,28 @@ class SidebarOCR:
         # 2. Run OCR
         recognized_text = self.recognize_chat_item_text(screenshot_bgr, dot_pos)
 
-        # 3. Match with whitelist
+        # 3. Match with whitelist (Direct substring, partial, and character fuzzy match)
         matched_contact = None
         for wl in whitelist:
             clean_wl = self.clean_ocr_text(wl)
-            # Direct or substring match
+            if not clean_wl:
+                continue
+
+            # A. Direct or substring match
             if clean_wl.lower() in recognized_text.lower() or recognized_text.lower() in clean_wl.lower():
                 matched_contact = wl
                 break
-            # Partial prefix match for multi-character names (>= 2 chars)
+
+            # B. Substring prefix / suffix match (e.g. 2 chars)
             if len(clean_wl) >= 2 and (clean_wl[:2] in recognized_text or clean_wl[-2:] in recognized_text):
+                matched_contact = wl
+                break
+
+            # C. Character-level fuzzy overlap (e.g. '丁竑福' vs '丁福...' matches '丁' and '福' -> 2/3 = 66.7% >= 50%)
+            match_chars = sum(1 for char in clean_wl if char in recognized_text)
+            overlap_ratio = match_chars / max(1, len(clean_wl))
+            if len(clean_wl) >= 2 and (match_chars >= 2 and overlap_ratio >= 0.50):
+                logger.info(f"✨ [模糊匹配命中白名單] OCR: '{recognized_text}' -> 白名單: '{wl}' (匹配度: {overlap_ratio:.1%})")
                 matched_contact = wl
                 break
 
