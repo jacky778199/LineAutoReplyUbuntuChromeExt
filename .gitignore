@@ -29,6 +29,9 @@ config.yaml
 .DS_Store
 Thumbs.db
 
+# Large binary packages
+*.apk
+
 # IDE configuration
 .vscode/
 .idea/

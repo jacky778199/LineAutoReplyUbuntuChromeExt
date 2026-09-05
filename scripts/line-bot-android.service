@@ -1,0 +1,19 @@
+[Unit]
+Description=LINE Android Auto-Reply Bot Service (Waydroid + uiautomator2)
+After=network.target waydroid-desktop.service
+Wants=waydroid-desktop.service
+
+[Service]
+Type=simple
+User=dinghonjay
+Group=dinghonjay
+WorkingDirectory=/home/dinghonjay/AutoReplyMessage
+Environment="DISPLAY=:99"
+Environment="PYTHONUNBUFFERED=1"
+Environment="XDG_RUNTIME_DIR=/run/user/1003"
+ExecStart=/home/dinghonjay/AutoReplyMessage/.venv/bin/python main_android.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

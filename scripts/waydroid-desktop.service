@@ -1,0 +1,19 @@
+[Unit]
+Description=Waydroid Android + Weston Desktop Environment Service
+After=network.target waydroid-container.service
+Wants=waydroid-container.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=dinghonjay
+Group=dinghonjay
+WorkingDirectory=/home/dinghonjay/AutoReplyMessage
+Environment="DISPLAY=:99"
+Environment="HOME=/home/dinghonjay"
+Environment="XDG_RUNTIME_DIR=/run/user/1003"
+ExecStart=/home/dinghonjay/AutoReplyMessage/scripts/start_waydroid_env.sh
+ExecStop=/home/dinghonjay/AutoReplyMessage/scripts/stop_waydroid_env.sh
+
+[Install]
+WantedBy=multi-user.target
