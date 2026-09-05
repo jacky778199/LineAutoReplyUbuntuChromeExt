@@ -170,8 +170,9 @@ class GreenDotDetector:
                             best_y = max_loc[1] + t_h // 2 + offset_y
                             logger.info(f"⚠️ 樣板最高相似度 {max_val:.2f} < 門檻 {self.confidence:.2f} 於座標 ({best_x}, {best_y})")
 
-            # 4. Merge and Deduplicate Points
-            final_points = self._group_nearby_points(detected_points, min_distance=18)
+            # 4. Filter points to left sidebar ROI (50 <= x <= 450) and Deduplicate Points
+            sidebar_detected = [pt for pt in detected_points if 50 <= pt[0] <= 450]
+            final_points = self._group_nearby_points(sidebar_detected, min_distance=18)
             final_points.sort(key=lambda p: p[1])
 
             # Debug logging and Visual Output (僅在 debug 模式且辨識結果有變動，或明確指定 save_debug_image 時才輸出圖片)

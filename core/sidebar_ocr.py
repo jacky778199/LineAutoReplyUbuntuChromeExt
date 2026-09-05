@@ -267,7 +267,8 @@ class SidebarOCR:
         # 2. Run OCR
         recognized_text = self.recognize_chat_item_text(screenshot_bgr, dot_pos)
 
-        # 3. Match with whitelist (Direct substring, partial, and character fuzzy match)
+        # 3. Match with whitelist (Direct substring, prefix, and SequenceMatcher fuzzy matching)
+        from difflib import SequenceMatcher
         matched_contact = None
         for wl in whitelist:
             clean_wl = self.clean_ocr_text(wl)
@@ -279,16 +280,17 @@ class SidebarOCR:
                 matched_contact = wl
                 break
 
-            # B. Substring prefix / suffix match (e.g. 2 chars)
+            # B. Substring prefix / suffix match (>= 2 chars)
             if len(clean_wl) >= 2 and (clean_wl[:2] in recognized_text or clean_wl[-2:] in recognized_text):
                 matched_contact = wl
                 break
 
-            # C. Character-level fuzzy overlap (e.g. '丁竑福' vs '丁福...' matches '丁' and '福' -> 2/3 = 66.7% >= 50%)
-            match_chars = sum(1 for char in clean_wl if char in recognized_text)
-            overlap_ratio = match_chars / max(1, len(clean_wl))
-            if len(clean_wl) >= 2 and (match_chars >= 2 and overlap_ratio >= 0.50):
-                logger.info(f"✨ [模糊匹配命中白名單] OCR: '{recognized_text}' -> 白名單: '{wl}' (匹配度: {overlap_ratio:.1%})")
+            # C. Sequence-aware fuzzy match (prevents random alphabet matching like 'AutoReply' in 'Keyboardshortcuts...')
+            matcher = SequenceMatcher(None, clean_wl.lower(), recognized_text.lower())
+            match = matcher.find_longest_match(0, len(clean_wl), 0, len(recognized_text))
+            # If the longest contiguous matching block >= 60% of name length (and >= 2 chars)
+            if match.size >= 2 and (match.size / len(clean_wl)) >= 0.60:
+                logger.info(f"✨ [模糊匹配命中白名單] OCR: '{recognized_text}' -> 白名單: '{wl}' (連續匹配長度: {match.size}/{len(clean_wl)})")
                 matched_contact = wl
                 break
 
