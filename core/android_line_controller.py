@@ -67,13 +67,22 @@ class AndroidLineController:
             logger.error(f"Error checking app list: {e}")
             return False
 
+    def is_line_running(self) -> bool:
+        """Checks if LINE app is running in foreground."""
+        try:
+            cur = self.d.app_current()
+            return cur.get("package") == self.LINE_PACKAGE
+        except Exception:
+            return False
+
     def launch_line(self, wait_seconds: float = 3.0) -> bool:
-        """Launches the LINE app and waits for it to appear."""
+        """Launches the LINE app safely using am start and waits for it to appear."""
         logger.info(f"Launching LINE app ({self.LINE_PACKAGE})...")
         try:
-            self.d.app_start(self.LINE_PACKAGE)
+            # Use direct am start instead of monkey to avoid triggering system shortcuts
+            self.d.shell("am start -n jp.naver.line.android/.activity.SplashActivity")
             time.sleep(wait_seconds)
-            return self.d.app_current().get("package") == self.LINE_PACKAGE
+            return self.is_line_running()
         except Exception as e:
             logger.error(f"Failed to launch LINE: {e}")
             return False
@@ -82,13 +91,18 @@ class AndroidLineController:
         """Stops the LINE app."""
         logger.info(f"Stopping LINE app...")
         try:
-            self.d.app_stop(self.LINE_PACKAGE)
+            self.d.shell(f"am force-stop {self.LINE_PACKAGE}")
         except Exception as e:
             logger.error(f"Failed to stop LINE: {e}")
 
     def switch_to_chats_tab(self) -> bool:
-        """Clicks on the 'Chats' / '聊天' bottom navigation tab."""
+        """Clicks on the 'Chats' / '聊天' bottom navigation tab with auto-recovery."""
         try:
+            # Auto-recovery: If LINE is not in foreground, wake it up immediately
+            if not self.is_line_running():
+                logger.info("LINE 應用不在前景，自動喚醒中...")
+                self.launch_line(wait_seconds=2.0)
+
             for _ in range(2):
                 for text in ["聊天", "Chats", "Chats tab"]:
                     elem = self.d(text=text)

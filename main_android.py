@@ -133,6 +133,10 @@ def main():
             # Ensure we are on Chats tab
             controller.switch_to_chats_tab()
 
+            # Heartbeat log every 30 scans
+            if scan_count % 30 == 0:
+                logger.debug(f"💓 Android Line Bot 正常運行中 (已掃描 {scan_count} 次)")
+
             # Scan chat list
             chat_items = controller.scan_chat_items()
             if not chat_items:
