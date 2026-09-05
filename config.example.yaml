@@ -65,5 +65,15 @@ notification:
   telegram_chat_id: "your-telegram-chat-id"     # Telegram Chat ID (或由 TELEGRAM_CHAT_ID 環境變數提供)
   verification_timeout: 90       # 手機驗證碼輸入等待時間 (秒)
 
+memory:
+  enabled: true                  # 是否開啟長遠記憶 (Fact & Preference Memory)
+  max_facts_per_contact: 20      # 每個好友最多保留的重要記憶條數
+  storage_dir: "logs/memories"   # 記憶 JSON 檔案存放目錄
+  episodic:
+    enabled: true                # 是否開啟第二層情節向量記憶 (Episodic Vector Archive)
+    top_k: 3                     # 每次 Tool 檢索最多召回幾筆相關歷史片段
+    min_score: 0.15              # 向量檢索最低相似度門檻
+    storage_dir: "logs/vector_db" # 向量資料庫儲存目錄
+
 
 

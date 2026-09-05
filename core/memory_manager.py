@@ -8,6 +8,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+from core.vector_store import EpisodicVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,9 @@ class MemoryManager:
 
         if self.enabled:
             os.makedirs(self.storage_dir, exist_ok=True)
+            self.vector_store = EpisodicVectorStore(config)
+        else:
+            self.vector_store = None
 
     def _get_filepath(self, contact_name: str) -> str:
         """Sanitizes contact name for safe filename usage."""
@@ -120,20 +124,61 @@ class MemoryManager:
         facts_formatted = "\n".join(f"- {fact}" for fact in facts)
         return f"\n【關於「{contact_name}」的長遠記憶與重要事實紀錄】（當前參考時間：{now_str}）：\n{facts_formatted}\n（請在溝通時自然參考上述背景資訊，若記憶中有具體日期，請比對當前參考時間自然表達，切勿機械式複述。）\n"
 
+    def search_past_memory(self, query: str, contact_name: str) -> str:
+        """
+        Tool interface for LLM: Searches historical episodic vector memory for a contact.
+        Returns formatted context string for LLM response synthesis.
+        """
+        if not self.enabled or not self.vector_store:
+            return "情節記憶庫未啟用。"
+        if not query or not query.strip():
+            return "查詢關鍵字為空，未檢索歷史紀錄。"
+
+        results = self.vector_store.search(query=query.strip(), contact_name=contact_name)
+        if not results:
+            return f"歷史對話紀錄中未檢索到與「{query}」直接相關的詳細內容。"
+
+        formatted_episodes = []
+        for i, ep in enumerate(results, 1):
+            ts = ep.get("timestamp", "未知時間")
+            content = ep.get("content", "").strip()
+            # Truncate content to avoid blowing up prompt
+            if len(content) > 500:
+                content = content[:500] + "... (內容過長截斷)"
+            formatted_episodes.append(f"【歷史對話片段 {i}】(時間: {ts}):\n{content}")
+
+        return (
+            f"【關於「{contact_name}」的歷史情節記憶檢索結果 (關鍵字: {query})】：\n"
+            + "\n\n".join(formatted_episodes)
+            + "\n（請依據上述檢索到的歷史情報，自然且親切地回覆對方，若細節依然不足可誠實表達。）"
+        )
+
     def update_memory_from_chat(self, contact_name: str, raw_chat_text: str, llm_service) -> List[str]:
         """
-        Uses LLM to extract new facts from raw chat text and merges with existing memories.
+        Uses LLM to extract new facts from raw chat text (Layer 1) and saves episodic chunk (Layer 2).
         Should be invoked asynchronously or after response generation.
         """
         if not self.enabled or not raw_chat_text or not raw_chat_text.strip():
             return []
 
-        existing_data = self.load_memory(contact_name)
-        existing_facts = existing_data.get("facts", [])
-
         now = datetime.now()
         weekday_map = {0: "一", 1: "二", 2: "三", 3: "四", 4: "五", 5: "六", 6: "日"}
         now_str = f"{now.strftime('%Y-%m-%d %H:%M:%S')} (星期{weekday_map[now.weekday()]})"
+
+        # Dual-Write Layer 2: Save to Episodic Vector Store
+        if self.vector_store:
+            try:
+                self.vector_store.add_episode(
+                    contact_name=contact_name,
+                    timestamp=now.strftime("%Y-%m-%d %H:%M:%S"),
+                    content=raw_chat_text
+                )
+            except Exception as e:
+                logger.warning(f"Failed to write episodic memory for [{contact_name}]: {e}")
+
+        # Dual-Write Layer 1: Extract and Save Key Facts
+        existing_data = self.load_memory(contact_name)
+        existing_facts = existing_data.get("facts", [])
 
         user_prompt = f"""【當前對話基準時間】：{now_str}
 

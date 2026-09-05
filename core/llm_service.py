@@ -158,7 +158,7 @@ class LLMService:
             model_name = primary_cfg.get("model_name", "gemini-3.6-flash")
             logger.info(f"Attempting reply generation via Primary LLM ({prov_name}: {model_name})...")
             
-            raw_reply = self._call_primary_llm(system_prompt, full_user_prompt)
+            raw_reply = self._call_primary_llm(system_prompt, full_user_prompt, contact_name=target_sender)
             reply = self._clean_reply_text(raw_reply)
             duration = time.time() - t_start
 
@@ -183,7 +183,7 @@ class LLMService:
             model_name = backup_cfg.get("model_name", "agnes-2.0-flash")
             logger.info(f"Attempting reply generation via Backup LLM ({prov_name}: {model_name})...")
             
-            raw_reply = self._call_backup_llm(system_prompt, full_user_prompt)
+            raw_reply = self._call_backup_llm(system_prompt, full_user_prompt, contact_name=target_sender)
             reply = self._clean_reply_text(raw_reply)
             duration = time.time() - t_start
 
@@ -210,8 +210,8 @@ class LLMService:
 
         return "[NO_REPLY]"
 
-    def _call_primary_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """Calls Primary LLM (Vertex AI / Gemini API)."""
+    def _call_primary_llm(self, system_prompt: str, user_prompt: str, contact_name: Optional[str] = None) -> str:
+        """Calls Primary LLM (Vertex AI / Gemini API) with optional Tool Calling."""
         primary_cfg = self.llm_config.get("primary", {})
         provider = primary_cfg.get("provider", "vertex_ai")
         model_name = primary_cfg.get("model_name", "gemini-3.5-flash")
@@ -231,15 +231,28 @@ class LLMService:
                 # Fallback to standard GEMINI_API_KEY environment variable
                 client = genai.Client()
 
-            # Disable automatic function calling (AFC) since we only perform text generation
-            afc_config = types.AutomaticFunctionCallingConfig(disable=True) if hasattr(types, "AutomaticFunctionCallingConfig") else None
-
             config_params = {
                 "system_instruction": system_prompt,
                 "temperature": 0.7,
             }
-            if afc_config:
-                config_params["automatic_function_calling"] = afc_config
+
+            # Register search_past_memory Tool if contact_name provided
+            if contact_name and self.memory_manager and self.memory_manager.enabled:
+                def search_past_memory(query: str) -> str:
+                    """當對象在詢問過去發生的具體事件、細節、曾經推薦過的事物、約定或舊有紀錄，且現有記憶背景未記載時，調用此工具檢索該對象的歷史對話存根。
+
+                    Args:
+                        query: 欲檢索的關鍵字或語意描述，例如「咖啡廳」、「面試職位」、「相機型號」
+                    """
+                    logger.info(f"🔍 [Tool Execution] search_past_memory(query='{query}', contact='{contact_name}')")
+                    return self.memory_manager.search_past_memory(query=query, contact_name=contact_name)
+
+                config_params["tools"] = [search_past_memory]
+            else:
+                # Disable automatic function calling (AFC) since we only perform text generation
+                afc_config = types.AutomaticFunctionCallingConfig(disable=True) if hasattr(types, "AutomaticFunctionCallingConfig") else None
+                if afc_config:
+                    config_params["automatic_function_calling"] = afc_config
 
             response = client.models.generate_content(
                 model=model_name,
@@ -316,8 +329,8 @@ class LLMService:
             }
         return results
 
-    def _call_backup_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """Calls Backup LLM (OpenAI / Compatible API)."""
+    def _call_backup_llm(self, system_prompt: str, user_prompt: str, contact_name: Optional[str] = None) -> str:
+        """Calls Backup LLM (OpenAI / Compatible API) with optional Tool Calling."""
         backup_cfg = self.llm_config.get("backup", {})
         api_key = backup_cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
         model_name = backup_cfg.get("model_name", "gpt-4o-mini")
@@ -326,16 +339,70 @@ class LLMService:
             raise ValueError("OpenAI / Backup API Key is missing in config or environment.")
 
         from openai import OpenAI
+        import json
         client = OpenAI(api_key=api_key, base_url=backup_cfg.get("base_url"))
 
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7
-        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
 
-        content = response.choices[0].message.content
+        tools = None
+        if contact_name and self.memory_manager and self.memory_manager.enabled:
+            tools = [{
+                "type": "function",
+                "function": {
+                    "name": "search_past_memory",
+                    "description": "當對象在詢問過去發生的具體事件、細節、曾經推薦過的事物、約定或舊有紀錄，且現有記憶背景未記載時，調用此工具檢索該對象的歷史對話存根。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "欲檢索的關鍵字或語意描述，例如「咖啡廳」、「面試職位」、「相機型號」"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }]
+
+        call_kwargs = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": 0.7
+        }
+        if tools:
+            call_kwargs["tools"] = tools
+
+        response = client.chat.completions.create(**call_kwargs)
+        first_choice = response.choices[0]
+
+        # Handle Tool Calls
+        if hasattr(first_choice.message, "tool_calls") and first_choice.message.tool_calls:
+            messages.append(first_choice.message)
+            for tool_call in first_choice.message.tool_calls:
+                fn_name = tool_call.function.name
+                if fn_name == "search_past_memory":
+                    try:
+                        args = json.loads(tool_call.function.arguments)
+                        q = args.get("query", "")
+                    except Exception:
+                        q = tool_call.function.arguments
+                    logger.info(f"🔍 [OpenAI Tool Execution] search_past_memory(query='{q}', contact='{contact_name}')")
+                    tool_result = self.memory_manager.search_past_memory(query=q, contact_name=contact_name)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": tool_result
+                    })
+            second_resp = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.7
+            )
+            content = second_resp.choices[0].message.content
+            return content if content else "[NO_REPLY]"
+
+        content = first_choice.message.content
         return content if content else "[NO_REPLY]"
