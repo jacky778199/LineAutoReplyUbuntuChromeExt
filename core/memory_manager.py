@@ -15,18 +15,24 @@ EXTRACTION_SYSTEM_PROMPT = """你是一個客觀且敏銳的情報與對話記�
 你的任務是閱讀對話紀錄，並維護「關於談話對象（Contact）」的長遠記憶列表（Facts & Preferences）。
 
 【規則與標準】：
-1. 僅提取真正重要的「個人事實」、「明確偏好」、「重要習慣」、「未來重要日程/約定」或「人際關係狀態」。
-2. 忽略無意義的問候、日常廢話、情緒發洩與短期動態。
-3. 嚴禁編造或推測未提及的資訊。
-4. 如果新對話與舊記憶有衝突（如：舊記憶「不喜歡咖啡」，新對話「最近迷上喝拿鐵」），請更新或取代舊記憶。
-5. 保持每條事實簡短精準（控制在 15 字以內）。
-6. 請直接輸出 JSON 陣列格式，嚴禁輸出 Markdown 標記或任何其他說明文字。
+1. 僅提取真正重要的「個人事實」、「明確偏好」、「重要習慣」、「未來重要日程/約定/面試等事件」或「人際關係狀態」。
+2. 【時間絕對化轉換規則（極重要）】：
+   - 系統會在輸入中提供【當前對話基準時間】（包含年月日與星期）。
+   - 對話中若出現任何時間表達（例如「今天」、「明天」、「後天」、「下週四」、「下個月」、「9月6號」等）：
+     * 嚴禁使用模糊或相對時間詞彙（如「下週四」、「明天」）。
+     * 必須根據基準時間推算出「具體的絕對日期與時間」，例如：「預計於 2026-09-10 (四) 至 Supermicro 面試 BMC 職位」、「預計於 2026-09-06 (日) 23:00 去看大象遊街」。
+   - 若對話中過去的某個約定或事件已經完成或過期，請將事實更新為已完成狀態，或適度移除過期事件。
+3. 忽略無意義的問候、日常廢話、情緒發洩與短期動態。
+4. 嚴禁編造或推測對話中未提及的資訊。
+5. 如果新對話與舊記憶有衝突或狀態更新（如：舊記憶「不喜歡咖啡」，新對話「最近迷上喝拿鐵」），請更新或取代舊記憶。
+6. 保持每條事實精準且資訊完整，單條事實長度建議控制在 35 字以內，包含必要的人事時地物。
+7. 請直接輸出 JSON 陣列格式，嚴禁輸出 Markdown 代碼塊或任何其他說明文字。
 
 輸出格式範例：
 [
-  "喜歡泰式料理",
-  "下週二有工作簡報",
-  "偏好使用英文或泰文對話"
+  "喜歡泰式料理與黑咖啡",
+  "預計於 2026-09-10 (四) 至 Supermicro 面試 BMC 相關職位",
+  "偏好使用底片相機拍照"
 ]
 """
 
@@ -98,7 +104,7 @@ class MemoryManager:
             logger.error(f"Failed to save memory for [{contact_name}]: {e}")
 
     def get_memory_prompt_block(self, contact_name: str) -> str:
-        """Formats stored memories into a prompt section for LLM context."""
+        """Formats stored memories into a prompt section for LLM context with current timestamp."""
         if not self.enabled:
             return ""
 
@@ -107,8 +113,12 @@ class MemoryManager:
         if not facts:
             return ""
 
+        now = datetime.now()
+        weekday_map = {0: "一", 1: "二", 2: "三", 3: "四", 4: "五", 5: "六", 6: "日"}
+        now_str = f"{now.strftime('%Y-%m-%d')} 星期{weekday_map[now.weekday()]}"
+
         facts_formatted = "\n".join(f"- {fact}" for fact in facts)
-        return f"\n【關於「{contact_name}」的長遠記憶與重要事實紀錄】：\n{facts_formatted}\n（請在溝通時自然參考上述背景資訊，切勿機械式複述。）\n"
+        return f"\n【關於「{contact_name}」的長遠記憶與重要事實紀錄】（當前參考時間：{now_str}）：\n{facts_formatted}\n（請在溝通時自然參考上述背景資訊，若記憶中有具體日期，請比對當前參考時間自然表達，切勿機械式複述。）\n"
 
     def update_memory_from_chat(self, contact_name: str, raw_chat_text: str, llm_service) -> List[str]:
         """
@@ -121,7 +131,13 @@ class MemoryManager:
         existing_data = self.load_memory(contact_name)
         existing_facts = existing_data.get("facts", [])
 
-        user_prompt = f"""當前舊有的記憶列表：
+        now = datetime.now()
+        weekday_map = {0: "一", 1: "二", 2: "三", 3: "四", 4: "五", 5: "六", 6: "日"}
+        now_str = f"{now.strftime('%Y-%m-%d %H:%M:%S')} (星期{weekday_map[now.weekday()]})"
+
+        user_prompt = f"""【當前對話基準時間】：{now_str}
+
+當前舊有的記憶列表：
 {json.dumps(existing_facts, ensure_ascii=False, indent=2)}
 
 最新對話紀錄：
@@ -129,7 +145,7 @@ class MemoryManager:
 {raw_chat_text}
 </chat_history>
 
-請分析上述對話，並輸出更新後的全量記憶 JSON 陣列："""
+請根據【當前對話基準時間】嚴格將所有涉及時間的事實推算並轉換為具體絕對日期（格式如 YYYY-MM-DD (星期X)），分析上述對話，並輸出更新後的全量記憶 JSON 陣列："""
 
         try:
             # Generate response via primary LLM

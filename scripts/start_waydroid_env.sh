@@ -59,8 +59,8 @@ echo "[+] 偵測到 Wayland Display: ${WAYLAND_DISPLAY}"
 
 # 6. 確保 waydroid-container 服務執行中
 if ! systemctl is-active --quiet waydroid-container; then
-    echo "[+] 正在啟動 waydroid-container.service..."
-    sudo systemctl start waydroid-container
+    echo "[+] 正在確認 waydroid-container.service..."
+    sudo -n systemctl start waydroid-container 2>/dev/null || true
     sleep 2
 fi
 
@@ -86,7 +86,7 @@ fi
 echo "[+] 等待 Android 系統開機完成..."
 BOOTED=0
 for i in $(seq 1 40); do
-    STATUS=$(sudo waydroid shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+    STATUS=$(waydroid shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
     if [ "${STATUS}" = "1" ]; then
         BOOTED=1
         echo "[+] Android 系統已開機完畢！(耗時約 $((i * 2)) 秒)"

@@ -1,6 +1,22 @@
-# LINE 桌面版智慧自動回覆機器人 (LINE Auto-Reply Bot)
+# LINE 智慧自動回覆機器人 (LINE Auto-Reply Bot Suite)
 
-本專案使用 Python 開發，專為 LINE 桌面版（支援 **Linux / Ubuntu Headless** 與 **Windows**）設計。採用 **點前 Tesseract OCR 視覺白名單預判 (Zero-Click Whitelist Pre-filtering)**、**側邊欄與登入介面雙錨點自適應相對定位 (Dual-Anchor Relative Positioning)**、**未讀綠點色塊與樣板雙重視覺辨識 (HSV GreenBlob + OpenCV Template Matching)**、**畫面基線監控與無人值守自動自癒恢復 (Auto-Recovery & Fullscreen)**、**Telegram Bot 驗證碼與待處理訊息推播 (Telegram Notifier)**、**全方位 Log 輪轉與失敗現場自動歸檔 (Rotating Log & Failure Archiver)**、**剪貼簿安全鎖與多重編碼容錯 (Robust Clipboard Manager)** 以及 **Vertex AI (主) / OpenAI (備) 雙 LLM 智慧備援回覆** 架構。
+> 🚀 **重大架構升級（強烈推薦）**：
+> 本專案現已全面支援 **【Waydroid Android 原生模式】** (`main_android.py`)！
+> 具備 **100% UI 文字原生直讀免 OCR**、**Zero-Click 絕對白名單防護**、**記憶時間絕對化 (Temporal Grounding)**、**LINE 原生 Resource ID 精準去重** 以及 **Systemd 開機全自動常駐守護**。
+> 👉 **強烈建議優先使用 Android 原生模式，完整說明請見 [README_ANDROID.md](README_ANDROID.md) 與安裝指南 [docs/WAYDROID_LINE_SETUP_SOP.md](docs/WAYDROID_LINE_SETUP_SOP.md)**。
+
+---
+
+## 📱 雙核心運作模式對比
+
+| 功能特性 | 🤖 Waydroid Android 原生模式 (`main_android.py`) | 🖥️ 桌面/Chrome 擴充套件模式 (`main.py`) |
+| :--- | :--- | :--- |
+| **文字讀取技術** | **100% 原生 Accessibility/UI 樹直讀** (零誤判) | Tesseract OCR 視覺文字辨識 (依賴解析度) |
+| **滑鼠/焦點占用** | **絕無滑鼠搶焦點**，背景無感運作 | 需模擬滑鼠點擊與鍵盤輸入 (需獨占畫面) |
+| **白名單防護** | **Zero-Click 白名單**（清單外好友 100% 不點入） | 點前視覺 OCR 截圖比對 |
+| **記憶時間錨定** | **時間絕對化 (Temporal Grounding)** 自動推算具體日期 | 基礎事實提煉 |
+| **伺服器開機自啟** | 支援完整 **Systemd 開機自動常駐** | 需手動開啟 Chrome 擴充套件或桌面客戶端 |
+| **適用環境** | Ubuntu 22.04/24.04/26.04 (Waydroid) | Ubuntu Headless (Xvfb) / Windows 桌面 |
 
 ---
 
@@ -250,11 +266,67 @@ AutoReplyMessage/
 ├── tests/                   # 單元測試集 (OCR 預判、對話解析、Log 存檔、記憶管理、雙錨點恢復等)
 ├── .env                     # 機密環境變數檔案 (已被 .gitignore 忽略，不入版本庫)
 ├── config.example.yaml      # 設定檔安全範本
-├── send_test_message.py     # LINE Messaging API 主動推播測試腳本
-├── main.py                  # 機器人主入口程式
-├── requirements.txt         # Python 依賴清單 (包含 pytesseract, opencv, google-genai)
+├── main_android.py          # 【強烈推薦】Waydroid Android 原生模式主入口
+├── main.py                  # 桌面版 / Chrome 擴充套件模式主入口
+├── README_ANDROID.md        # Android 原生模式專屬部署與操作指南
+├── scripts/                 # 一鍵啟動與 Systemd 自動化腳本
+│   ├── start_waydroid_env.sh
+│   ├── stop_waydroid_env.sh
+│   ├── install_line_apk.sh
+│   ├── waydroid-desktop.service
+│   └── line-bot-android.service
+├── Line_Official_Robot/     # LINE 官方機器人 (Messaging API) 互動模組
+│   ├── robot_client.py
+│   ├── send_message.py
+│   └── webhook_server.py
+├── logs/                    # 執行日誌與歸檔庫 (已被 .gitignore 忽略)
+│   ├── bot.log              # 5MB 循環輪轉日常日誌 (bot.log.1, bot.log.2)
+│   ├── reply_history.log    # 成功回覆歷程清單
+│   ├── memories/            # 好友獨立長遠事實記憶 JSON 庫 (時間絕對化)
+│   └── failures/            # 失敗與略過事件專屬封包 (summary.json, raw_chat.txt, screenshot.png)
+├── debug/                   # 偵錯暫存檔案與最新對話文字
+├── tests/                   # 單元測試集
+├── .env                     # 機密環境變數檔案 (已被 .gitignore 忽略)
+├── config.example.yaml      # 設定檔安全範本
+├── requirements.txt         # Python 依賴清單
 └── README.md                # 專案說明文件
 ```
+
+---
+
+## ⚙️ 開機自動啟動與常駐守護 (Systemd)
+
+在 Ubuntu 伺服器部署時，強烈建議啟用專案內附的 Systemd 守護服務（配置於 `/etc/systemd/system/`），實現伺服器開機全自動啟動與崩潰自癒重啟：
+
+### 1. 一鍵啟用開機自啟動
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable waydroid-desktop.service line-bot-android.service
+```
+
+### 2. 服務日常管理
+```bash
+# 啟動機器人背景服務 (請確保前景無 main_android.py 執行)
+sudo systemctl start line-bot-android.service
+
+# 停止服務
+sudo systemctl stop line-bot-android.service
+
+# 查看即時對話與回覆日誌
+journalctl -u line-bot-android.service -f
+
+# 檢查當前運行狀態
+systemctl status line-bot-android.service
+```
+
+---
+
+## 🤖 LINE Official Robot 官方機器人模組
+
+專案包含官方 Messaging API 工具模組（位於 `Line_Official_Robot/`）：
+* **主動發送指令**：`.venv/bin/python Line_Official_Robot/send_message.py -i <USER_ID>`
+* **雙向 Webhook Server**：支援 ngrok 隧道與自動 Echo 互動功能。
+* 完整文件請參考：[Line_Official_Robot/README.md](Line_Official_Robot/README.md)。
 
 ---
 
@@ -262,11 +334,6 @@ AutoReplyMessage/
 
 執行內建單元測試集以驗證各核心模組：
 ```bash
-python tests/test_sidebar_ocr.py     # 驗證點前 OCR 視覺預判與冷卻快取
-python tests/test_sender_parser.py   # 驗證長對話解析、雜訊過濾與白名單匹配
-python tests/test_chat_logger.py     # 驗證 Log 輪轉與失敗診斷封包歸檔
-python tests/test_memory_manager.py  # 驗證長遠記憶 CRUD 與 Prompt 格式化
-python tests/test_notifier.py        # 驗證 Telegram 通知模組
-python tests/test_recovery.py        # 驗證環境自癒與雙錨點插值
+.venv/bin/python -m unittest discover -s tests
 ```
 

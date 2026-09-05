@@ -22,9 +22,13 @@
 * **備用模型**：OpenAI API / 相容模型 (`agnes-2.0-flash` / `gpt-4o-mini`)
 * 支援針對不同好友或群組設定專屬 Prompt（繁體中文、英文、泰文、語氣風格等）。
 
-### 4. 長遠事實與偏好記憶庫 (`MemoryManager`)
-* 自動為每位好友建立專屬的長期記憶檔案（`logs/memories/<好友名稱>.json`）。
-* 生成回覆時自動注入歷史事實與偏好；回覆送出後背景非同步更新事實庫。
+### 4. 長遠事實記憶與「時間絕對化 (Temporal Grounding)」🔥
+* **個人化長期事實檔案**：自動為每位好友建立專屬的長期記憶檔案（`logs/memories/<好友名稱>.json`）。
+* **時間絕對化錨定 (Temporal Grounding)**：
+  * **解決相對時間漂移痛點**：日常對話常包含「下週四要面試」、「明天看展覽」等相對時間詞彙，若直接記錄，過幾天後 LLM 會誤以為是未來的下週四。
+  * **自動推算絕對日期**：提煉記憶時自動注入【當前對話基準時間】（含星期），強制 LLM 換算為具體絕對日期（例如：`預計於 2026-09-10 (四) 至 Supermicro 面試 BMC 相關職位`）。
+  * **生成時序對齊**：回覆模型時注入當前系統時間，使 AI 能精準識別該事件是「已過期」、「今天發生」或「即將到來」，實現主動且自然的關心。
+* **背景非同步 Thread 提煉**：訊息發送後立即於背景執行緒提取記憶，主迴圈花費 0 毫秒等待，完全不拖慢 LINE 介面的回覆與監聽速度。
 
 ### 5. Telegram 秘書推播 (`TelegramNotifier`)
 * 異常報警、訊息發送失敗時第一時間推播。
@@ -55,9 +59,9 @@ flowchart TD
         
         subgraph Bot["Python 自動化主程式 (main_android.py)"]
             U2["uiautomator2 SDK"]
-            CTRL["AndroidLineController"]
+            CTRL["AndroidLineController (Resource ID 精準定位)"]
             LLM["LLMService (Vertex AI / OpenAI)"]
-            MEM["MemoryManager (長期事實庫)"]
+            MEM["MemoryManager (時間絕對化事實庫)"]
             
             U2 <--> ADB_DAEMON
             CTRL --> U2
@@ -69,14 +73,39 @@ flowchart TD
 
 ---
 
+## 🔍 精準 UI 辨識與去重簽章機制
+
+### 1. 原生 Resource ID 節點定位（排除外層容器干擾）
+LINE Android 的 RecyclerView 聊天清單中，外層存在一個高度 684px 的列表容器（Row 0），若未過濾會將下方所有好友的文字與未讀紅點混雜，導致誤判「幽靈未讀」。
+本系統透過專屬 Resource ID 進行精準定位，確保 100% 穩定性：
+* **好友/群組名稱**：`jp.naver.line.android:id/name`
+* **真實最新預覽內容**：`jp.naver.line.android:id/last_message`
+* **發送時間/日期**：`jp.naver.line.android:id/date`
+* **未讀數字計數**：`jp.naver.line.android:id/unread_message_count` 或 `square_chat_unread_message_count`
+
+### 2. 簽章去重演算法 (Signature Deduplication)
+```python
+sig = f"{name}::{date_str}::{last_msg}"
+```
+* 結合「好友名稱」、「發送時間戳記」與「真正的最新訊息文字」。
+* 當對方在同一分鐘發布新訊息時，由於內容變更，簽章自動更新，確保新訊息立即被觸發回覆。
+* 成功發送、判定 `[NO_REPLY]` 或通話事件後自動記入記憶體集合，絕不重複打擾。
+
+### 3. 通話/視訊事件自動處理
+自動辨識語音通話（Voice call）、視訊通話（Video call）、未接來電與通話時長事件，機器人會自動進入聊天室消除紅點後返回，避免因未讀紅點未消除而產生無限循環。
+
+---
+
 ## 🚀 快速開始 (Quick Start)
 
-### 步驟 1：啟動虛擬桌面與 Waydroid 環境
-執行已封裝好的一鍵啟動腳本：
+### 步驟 1：事前啟動環境（冷啟動 SOP）
+若伺服器重新開機，執行已封裝好的一鍵啟動腳本：
 ```bash
 ./scripts/start_waydroid_env.sh
 ```
-> 此腳本會依序啟動：`Xvfb :99` ➡️ `x11vnc` ➡️ `pipewire-pulse` ➡️ `Weston (540x960)` ➡️ `Waydroid Session` ➡️ `ADB 自動授權連線` ➡️ 開啟 Android 畫面。
+> 此腳本會依序啟動：`Xvfb :99` ➡️ `x11vnc` ➡️ `pipewire-pulse` ➡️ `Weston (540x960)` ➡️ `Waydroid Session` ➡️ `ADB 自動授權連線` ➡️ 拉起 Android 手機 UI。
+
+*(如果伺服器本來就在運行中，且 Waydroid Session 已在線，則無須重複執行此步驟。)*
 
 ### 步驟 2：安裝 LINE App (ARM64 官方 APK)
 若尚未安裝 LINE，可直接執行安裝輔助腳本：
@@ -107,63 +136,48 @@ bot:
       She is my girlfriend, only English or Thai language. Romantic and caring tone.
 ```
 
-### 步驟 5：啟動自動回覆機器人
+### 步驟 5：啟動自動回覆機器人 (手動前景模式)
 ```bash
 .venv/bin/python main_android.py
 ```
 
 ---
 
-## 📂 專案檔案結構 (Android 模式)
+## ⚙️ 開機自動啟動與 Systemd 背景常駐守護
 
+專案中已備妥兩套標準的 Systemd 服務單元（放置於 `/etc/systemd/system/`），可實現伺服器開機全自動啟動與崩潰自癒重啟：
+
+### 1. 服務層級依賴關係
 ```text
-AutoReplyMessage/
-├── README.md                      # 原有的桌面版/Chrome擴充套件版文件
-├── README_ANDROID.md              # 【本文件】Waydroid Android 模式說明
-├── config.yaml                    # 全域設定檔（模型金鑰、白名單、Prompt）
-├── main_android.py                # Android 模式主程式 (啟動入口)
-│
-├── core/
-│   ├── android_line_controller.py # uiautomator2 Android 原生 LINE 控制器
-│   ├── llm_service.py             # Vertex AI (主) / OpenAI (備) 智慧生成模組
-│   ├── memory_manager.py          # 好友長遠事實與偏好記憶持久化
-│   ├── notifier.py                # Telegram 推播與異常通報
-│   └── chat_logger.py             # 輪轉式 Log 與失敗封包歸檔
-│
-├── scripts/
-│   ├── start_waydroid_env.sh      # 一鍵啟動 Weston + Waydroid + ADB 環境
-│   ├── stop_waydroid_env.sh       # 一鍵安全停止 Waydroid 與 Weston
-│   ├── install_line_apk.sh        # 一鍵安裝 APK 輔助腳本
-│   ├── waydroid-desktop.service   # Systemd 桌面環境常駐服務
-│   └── line-bot-android.service   # Systemd 機器人常駐服務
-│
-└── docs/
-    └── WAYDROID_LINE_SETUP_SOP.md # 全新機器環境安裝與踩坑詳細 SOP 筆記
+systemd (multi-user.target)
+   └── waydroid-container.service (底層 LXC Android 容器)
+          └── waydroid-desktop.service (虛擬桌面、Weston、Session、ADB)
+                 └── line-bot-android.service (main_android.py 自動回覆主程式)
 ```
 
----
-
-## ⚙️ 常駐為系統背景服務 (Systemd)
-
-若希望主機開機後自動就緒並常駐運行，可啟用以下兩個 Systemd 服務：
-
-### 1. 啟用 Waydroid + Weston 桌面環境常駐
+### 2. 一鍵啟用開機自動啟動
+請在終端機執行以下指令啟用服務：
 ```bash
-sudo systemctl enable --now waydroid-desktop.service
+sudo systemctl daemon-reload
+sudo systemctl enable waydroid-desktop.service line-bot-android.service
 ```
 
-### 2. 啟用 LINE Android 自動回覆機器人常駐
+### 3. 服務日常管理指令
 ```bash
-sudo systemctl enable --now line-bot-android.service
-```
+# 啟動服務 (注意：請先關閉前景執行的 main_android.py)
+sudo systemctl start line-bot-android.service
 
-### 服務狀態檢查與日誌
-```bash
-# 檢查機器人運作狀態
-systemctl status line-bot-android.service
+# 停止服務
+sudo systemctl stop line-bot-android.service
 
-# 查看即時日誌
+# 重新啟動服務
+sudo systemctl restart line-bot-android.service
+
+# 查看即時日誌 (即時監控對話與回覆輸出)
 journalctl -u line-bot-android.service -f
+
+# 檢查當前運行狀態
+systemctl status line-bot-android.service
 ```
 
 ---
@@ -190,3 +204,4 @@ List of devices attached
 
 ### Q3: 換到全新伺服器時該如何快速安裝？
 請參考完整步驟 SOP 筆記：[docs/WAYDROID_LINE_SETUP_SOP.md](file:///home/dinghonjay/AutoReplyMessage/docs/WAYDROID_LINE_SETUP_SOP.md)。
+

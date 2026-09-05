@@ -127,8 +127,14 @@ class LLMService:
             .replace("</system_instruction>", "[tag_escaped]")
         )
 
+        from datetime import datetime
+        now = datetime.now()
+        weekday_map = {0: "一", 1: "二", 2: "三", 3: "四", 4: "五", 5: "六", 6: "日"}
+        current_time_str = f"{now.strftime('%Y-%m-%d %H:%M')} (星期{weekday_map[now.weekday()]})"
+
         full_user_prompt = f"""
 你現在正在處理 LINE 聊天室中與【{target_sender}】的對話。
+當前基準時間是：{current_time_str}。
 我的名稱（本人）是：「{self.my_name}」。
 對話中主要的對話對象是：「{target_sender}」。
 
