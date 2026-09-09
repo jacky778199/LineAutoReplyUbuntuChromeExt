@@ -30,7 +30,17 @@
   * **生成時序對齊**：回覆模型時注入當前系統時間，使 AI 能精準識別該事件是「已過期」、「今天發生」或「即將到來」，實現主動且自然的關心。
 * **背景非同步 Thread 提煉**：訊息發送後立即於背景執行緒提取記憶，主迴圈花費 0 毫秒等待，完全不拖慢 LINE 介面的回覆與監聽速度。
 
-### 5. Telegram 秘書推播 (`TelegramNotifier`)
+### 5. 雙層情節記憶庫與 Hybrid Search (Vector + BM25 RRF) 🚀
+* **第二層海量歷史情節封存**：自動將對話單元存入本地 SQLite (`logs/vector_db/episodes.db`)，突破長遠事實條數限制。
+* **語意向量 + BM25 稀疏檢索**：
+  * 結合 Dense Vector（理解語意與情境）與 Sparse BM25（關鍵字精準字面比對）。
+  * 徹底解決純向量檢索在搜尋短詞（如「修車」、「車」、「底片相機」）時的語意飄移問題，字面精確命中第一名。
+  * 支援長度自適應權重融合（短詞偏重 BM25、長句偏重語意向量）與標準 `hybrid_rrf` 模式。
+* **LLM 工具透明調用**：
+  * 透過 Function Calling 提供 `search_past_memory` 工具，模型主動查閱對話細節。
+  * 檢索關鍵字、召回片段與最終產出即時留存於 `logs/past_memory_output.log`。
+
+### 6. Telegram 秘書推播 (`TelegramNotifier`)
 * 異常報警、訊息發送失敗時第一時間推播。
 
 ---

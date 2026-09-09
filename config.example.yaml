@@ -71,9 +71,14 @@ memory:
   storage_dir: "logs/memories"   # 記憶 JSON 檔案存放目錄
   episodic:
     enabled: true                # 是否開啟第二層情節向量記憶 (Episodic Vector Archive)
+    search_mode: "hybrid"        # 檢索模式: hybrid (語意向量 + BM25 混合檢索), hybrid_rrf, vector, bm25
     top_k: 3                     # 每次 Tool 檢索最多召回幾筆相關歷史片段
-    min_score: 0.15              # 向量檢索最低相似度門檻
+    min_score: 0.15              # 檢索最低門檻 (綜合分數或相似度門檻)
     storage_dir: "logs/vector_db" # 向量資料庫儲存目錄
+    hybrid:
+      bm25_weight: 0.5           # BM25 關鍵字權重 (若查詢 <= 4 字會自動增強關鍵字比對)
+      vector_weight: 0.5         # 向量語意權重
+      rrf_k: 60                  # 若使用 hybrid_rrf 時的平滑常數
 
 
 

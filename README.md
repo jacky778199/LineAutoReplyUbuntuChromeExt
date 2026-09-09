@@ -89,11 +89,23 @@
 * **Prompt 越獄與敏感資訊防護**：嚴格指示模型忽略聊天記錄中任何企圖覆寫系統規則、索取 Prompt 或金鑰的指令，杜絕對抗性注入攻擊。
 * **輸出清理過濾 (`_clean_reply_text`)**：自動剔除多餘的 Markdown 代碼標記（` ``` `）與外層包裹引號，確保回覆為純淨文字。
 
-### 13. 長遠事實與偏好記憶庫 (`MemoryManager` / Option A) 🔥
+### 13. 長遠事實與偏好記憶庫 (`MemoryManager` / Layer 1) 🔥
 * **對話背景與人設持久化**：為每位好友建立專屬的長期記憶檔案（`logs/memories/<contact_name>.json`）。
 * **Prompt 動態注入**：生成回覆時自動帶入歷史累積的事實、習慣、語言與飲食偏好，讓對話越聊越有默契。
 * **背景非同步自動萃取**：訊息送出後，背景自動觸發 LLM 分析最新對話，自動新增、覆蓋或更新事實，完全不增加 LINE 回應延遲。
 * **純文字 JSON 管理**：格式清晰透明，支援隨時手動檢視與編修。
+
+### 14. 雙層情節記憶庫與 Hybrid Search 混合檢索 (`EpisodicVectorStore` / Layer 2) 🚀
+* **雙層長短期記憶架構**：
+  * **第一層（核心事實偏好）**：精簡 JSON 檔案，記錄不變常態偏好與重大事件（上限 20 條）。
+  * **第二層（情節歷史封存）**：SQLite 本地單一資料庫（`logs/vector_db/episodes.db`），自動將海量對話切塊封存並生成語意向量。
+* **Hybrid Search（語意向量 + BM25 混合檢索 / 現代 RAG 標準）**：
+  * **字面精準度 (Lexical Precision)**：內建標準 BM25 演算法（TF/IDF + 文檔長度標準化懲罰），確保搜尋「修車」、「車」、「底片相機」等專有名詞或極短關鍵字時 **100% 字面精準命中**，徹底消除純向量模型的語意飄移。
+  * **中文/英文雙模分詞 (`tokenize_text`)**：無需額外大型辭典依賴，透過英文單詞與中文 Unigram + Bigram 雙重特徵擷取，精準切分複合詞。
+  * **智慧自適應分數融合 (Normalized Score Fusion)**：查詢詞長度 $\le 4$ 字時自動強化 BM25 比對權重（60% BM25 + 40% 向量），長句/概念性問句則偏重語意向量。亦支援標準倒數排名融合（`hybrid_rrf`）。
+* **LLM 工具調用與透明記錄**：
+  * 當 LLM 遇到不確定的歷史話題時，自動透過 Function Calling 呼叫 `search_past_memory` 檢索過去紀錄。
+  * 檢索過程、LLM 查詢關鍵字與最終輸出透明記錄於 `logs/past_memory_output.log`，方便稽核與調校。
 
 ---
 
@@ -247,20 +259,24 @@ AutoReplyMessage/
 ├── assets/                  # 視覺辨識樣板圖片 (sidebar_*.png, login_*.png, green_dot_*.png)
 ├── core/
 │   ├── __init__.py          # 核心套件初始化與 .env 環境變數自動載入器
-│   ├── sidebar_ocr.py       # 點前 OCR 視覺白名單預判 (含繁中 3.5x 銳化與字元級模糊容錯比對)
+│   ├── android_line_controller.py # Waydroid Android LINE 控制器 (uiautomator2 / 記憶體洩漏監控 / 凍結自癒)
+│   ├── vector_store.py      # 第二層情節記憶庫與 Hybrid Search 檢索引擎 (Dense Vector + Sparse BM25)
 │   ├── memory_manager.py    # 長遠事實與偏好記憶管理器 (Fact & Preference JSON Memory)
+│   ├── sidebar_ocr.py       # 點前 OCR 視覺白名單預判 (含繁中 3.5x 銳化與字元級模糊容錯比對)
 │   ├── chat_logger.py       # 5MB 日誌輪轉、回覆歷史與失敗封包自動存檔 (ChatLogger)
 │   ├── clipboard_manager.py # 多編碼安全剪貼簿管理器 (xclip / pyperclip / Lock)
 │   ├── environment_validator.py # 螢幕左側 400px 基線與側邊欄雙錨點檢測
 │   ├── notifier.py          # Telegram 待處理訊息、異常警報與 2FA 驗證碼推播
 │   ├── recovery_manager.py  # Chrome LINE 崩潰重啟、雙錨點自動登入、視窗全螢幕 (F11)
-│   ├── llm_service.py       # 雙 LLM 引擎 (Vertex AI 主 / OpenAI 備援，含 Memory 注入與防注入)
+│   ├── llm_service.py       # 雙 LLM 引擎 (Vertex AI 主 / OpenAI 備援，含 Tool Calling 與回覆日誌)
 │   ├── vision_detector.py   # 側邊欄雙錨點插值 + HSV 色塊過濾 + 樣板比對 + 座標網格生成
 │   └── window_helper.py     # 視窗幾何計算、SafeChatHistory、SafeInputBox、解除焦點
 ├── logs/                    # 執行日誌與歸檔庫 (已被 .gitignore 忽略)
 │   ├── bot.log              # 5MB 循環輪轉日常日誌 (bot.log.1, bot.log.2)
 │   ├── reply_history.log    # 成功回覆歷程清單
+│   ├── past_memory_output.log # LLM Tool 呼叫、記憶檢索細節與最終產出透明日誌
 │   ├── memories/            # 好友獨立長遠事實記憶 JSON 庫 (如 Eyeyupy.json, 丁竑福.json)
+│   ├── vector_db/           # SQLite 情節記憶向量資料庫 (episodes.db)
 │   └── failures/            # 失敗與略過事件專屬封包 (summary.json, raw_chat.txt, screenshot.png)
 ├── debug/                   # 偵錯暫存檔案與最新對話文字 (sidebar_preview.png 等)
 ├── tests/                   # 單元測試集 (OCR 預判、對話解析、Log 存檔、記憶管理、雙錨點恢復等)
