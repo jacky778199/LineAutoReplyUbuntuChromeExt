@@ -74,7 +74,62 @@ class LLMService:
             cleaned = cleaned[1:-1].strip()
         return cleaned if cleaned else "[NO_REPLY]"
 
-    def generate_reply(self, raw_chat_text: str, contact_name: str, sender_name: str = None) -> str:
+    def _log_past_memory_output(
+        self,
+        session_id: str,
+        contact_name: str,
+        question: str,
+        tool_calls: list,
+        final_reply: str
+    ):
+        """
+        Logs search_past_memory invocations, local retrieved content, and final LLM reply
+        to logs/past_memory_output.log.
+        """
+        try:
+            from datetime import datetime
+            log_dir = "logs"
+            os.makedirs(log_dir, exist_ok=True)
+            log_file = os.path.join(log_dir, "past_memory_output.log")
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            lines = [
+                "=" * 80,
+                f"【時間】: {ts}",
+                f"【ID】: {session_id}",
+                f"【對象】: 【{contact_name}】",
+                f"【對象問的問題】: {question}",
+                "-" * 80,
+            ]
+
+            for idx, call in enumerate(tool_calls, 1):
+                q = call.get("query", "")
+                out = call.get("output", "")
+                call_time = call.get("time", ts)
+                lines.append(f"【LLM 要求的東西 (Tool Call #{idx}) [{call_time}]】: '{q}'")
+                lines.append(f"【本地 Python 回傳內容 (Tool Call #{idx})】:")
+                lines.append(out.strip() if out else "(無相關記憶內容)")
+                lines.append("-" * 80)
+
+            lines.append("【最終回覆的內容】:")
+            lines.append(final_reply.strip() if final_reply else "[NO_REPLY]")
+            lines.append("=" * 80 + "\n\n")
+
+            entry = "\n".join(lines)
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(entry)
+            logger.info(f"🧠 [Memory-Log] 已記錄記憶調用與回覆至: {log_file}")
+        except Exception as e:
+            logger.error(f"寫入 past_memory_output.log 失敗: {e}")
+
+    def generate_reply(
+        self,
+        raw_chat_text: str,
+        contact_name: str,
+        sender_name: str = None,
+        session_id: str = None,
+        incoming_question: str = None
+    ) -> str:
         """
         Main entry point for generating a response.
         Tries Primary (Vertex AI / Gemini) first. If it fails, falls back to Backup (OpenAI/Agnes).
@@ -82,6 +137,21 @@ class LLMService:
         """
         import time
         t_start = time.time()
+        curr_session_id = session_id or f"mem_{int(t_start * 1000)}"
+
+        # Resolve incoming question
+        question = (incoming_question or "").strip()
+        if not question and raw_chat_text:
+            lines = [l.strip() for l in raw_chat_text.splitlines() if l.strip()]
+            for l in reversed(lines):
+                if not (f"{self.my_name}" in l or "我:" in l):
+                    question = l
+                    break
+            if not question and lines:
+                question = lines[-1]
+
+        memory_tool_calls = []
+
         self._last_diagnostics = {
             "contact_name": contact_name,
             "sender_name": sender_name,
@@ -158,7 +228,9 @@ class LLMService:
             model_name = primary_cfg.get("model_name", "gemini-3.6-flash")
             logger.info(f"Attempting reply generation via Primary LLM ({prov_name}: {model_name})...")
             
-            raw_reply = self._call_primary_llm(system_prompt, full_user_prompt, contact_name=target_sender)
+            raw_reply = self._call_primary_llm(
+                system_prompt, full_user_prompt, contact_name=target_sender, tool_tracker=memory_tool_calls
+            )
             reply = self._clean_reply_text(raw_reply)
             duration = time.time() - t_start
 
@@ -169,6 +241,15 @@ class LLMService:
                 "raw_reply": reply,
                 "status": "SUCCESS" if reply and reply != "[NO_REPLY]" else "NO_REPLY"
             })
+
+            if memory_tool_calls:
+                self._log_past_memory_output(
+                    session_id=curr_session_id,
+                    contact_name=target_sender,
+                    question=question,
+                    tool_calls=memory_tool_calls,
+                    final_reply=reply
+                )
 
             if reply:
                 return reply
@@ -183,7 +264,9 @@ class LLMService:
             model_name = backup_cfg.get("model_name", "agnes-2.0-flash")
             logger.info(f"Attempting reply generation via Backup LLM ({prov_name}: {model_name})...")
             
-            raw_reply = self._call_backup_llm(system_prompt, full_user_prompt, contact_name=target_sender)
+            raw_reply = self._call_backup_llm(
+                system_prompt, full_user_prompt, contact_name=target_sender, tool_tracker=memory_tool_calls
+            )
             reply = self._clean_reply_text(raw_reply)
             duration = time.time() - t_start
 
@@ -194,6 +277,15 @@ class LLMService:
                 "raw_reply": reply,
                 "status": "SUCCESS" if reply and reply != "[NO_REPLY]" else "NO_REPLY"
             })
+
+            if memory_tool_calls:
+                self._log_past_memory_output(
+                    session_id=curr_session_id,
+                    contact_name=target_sender,
+                    question=question,
+                    tool_calls=memory_tool_calls,
+                    final_reply=reply
+                )
 
             if reply:
                 return reply
@@ -208,9 +300,24 @@ class LLMService:
                 "raw_reply": "[NO_REPLY]"
             })
 
+            if memory_tool_calls:
+                self._log_past_memory_output(
+                    session_id=curr_session_id,
+                    contact_name=target_sender,
+                    question=question,
+                    tool_calls=memory_tool_calls,
+                    final_reply="[NO_REPLY_FAILED]"
+                )
+
         return "[NO_REPLY]"
 
-    def _call_primary_llm(self, system_prompt: str, user_prompt: str, contact_name: Optional[str] = None) -> str:
+    def _call_primary_llm(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        contact_name: Optional[str] = None,
+        tool_tracker: Optional[list] = None
+    ) -> str:
         """Calls Primary LLM (Vertex AI / Gemini API) with optional Tool Calling."""
         primary_cfg = self.llm_config.get("primary", {})
         provider = primary_cfg.get("provider", "vertex_ai")
@@ -238,14 +345,24 @@ class LLMService:
 
             # Register search_past_memory Tool if contact_name provided
             if contact_name and self.memory_manager and self.memory_manager.enabled:
+                from datetime import datetime
+
                 def search_past_memory(query: str) -> str:
                     """當對象在詢問過去發生的具體事件、細節、曾經推薦過的事物、約定或舊有紀錄，且現有記憶背景未記載時，調用此工具檢索該對象的歷史對話存根。
 
                     Args:
                         query: 欲檢索的關鍵字或語意描述，例如「咖啡廳」、「面試職位」、「相機型號」
                     """
+                    call_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     logger.info(f"🔍 [Tool Execution] search_past_memory(query='{query}', contact='{contact_name}')")
-                    return self.memory_manager.search_past_memory(query=query, contact_name=contact_name)
+                    res = self.memory_manager.search_past_memory(query=query, contact_name=contact_name)
+                    if tool_tracker is not None:
+                        tool_tracker.append({
+                            "query": query,
+                            "output": res,
+                            "time": call_time
+                        })
+                    return res
 
                 config_params["tools"] = [search_past_memory]
             else:
@@ -329,7 +446,13 @@ class LLMService:
             }
         return results
 
-    def _call_backup_llm(self, system_prompt: str, user_prompt: str, contact_name: Optional[str] = None) -> str:
+    def _call_backup_llm(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        contact_name: Optional[str] = None,
+        tool_tracker: Optional[list] = None
+    ) -> str:
         """Calls Backup LLM (OpenAI / Compatible API) with optional Tool Calling."""
         backup_cfg = self.llm_config.get("backup", {})
         api_key = backup_cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
@@ -340,6 +463,7 @@ class LLMService:
 
         from openai import OpenAI
         import json
+        from datetime import datetime
         client = OpenAI(api_key=api_key, base_url=backup_cfg.get("base_url"))
 
         messages = [
@@ -389,8 +513,15 @@ class LLMService:
                         q = args.get("query", "")
                     except Exception:
                         q = tool_call.function.arguments
+                    call_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     logger.info(f"🔍 [OpenAI Tool Execution] search_past_memory(query='{q}', contact='{contact_name}')")
                     tool_result = self.memory_manager.search_past_memory(query=q, contact_name=contact_name)
+                    if tool_tracker is not None:
+                        tool_tracker.append({
+                            "query": q,
+                            "output": tool_result,
+                            "time": call_time
+                        })
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,

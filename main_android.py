@@ -233,10 +233,13 @@ def main():
 
                 # Format messages for LLM
                 # Generate Reply using LLM
+                session_id = f"droid_{int(time.time())}"
                 reply_text = llm_service.generate_reply(
                     raw_chat_text=raw_chat_text,
                     contact_name=name,
-                    sender_name=name
+                    sender_name=name,
+                    session_id=session_id,
+                    incoming_question=latest_msg
                 )
                 diag = llm_service.get_last_diagnostics()
                 provider = diag.get("provider", "UNKNOWN")
@@ -254,7 +257,6 @@ def main():
                 if success:
                     logger.info(f"✅ 成功發送回覆至 '{name}': '{reply_text}' (耗時: {elapsed:.2f}s, 模型: {provider})")
                     processed_signatures.add(sig)
-                    session_id = f"droid_{int(time.time())}"
                     chat_logger.log_reply_success(
                         session_id=session_id,
                         contact_name=name,
