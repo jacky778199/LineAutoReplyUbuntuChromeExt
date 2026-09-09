@@ -66,9 +66,19 @@ fi
 
 # 7. 啟動 Waydroid Session
 SESSION_STATUS=$(waydroid status 2>/dev/null | grep "Session:" | awk '{print $2}' || true)
+if [ "${SESSION_STATUS}" = "RUNNING" ]; then
+    # Test if Waydroid is responsive
+    if ! waydroid shell getprop sys.boot_completed >/dev/null 2>&1; then
+        echo "[!] Waydroid Session 處於無回應狀態，重啟 Session..."
+        waydroid session stop 2>/dev/null || true
+        sleep 2
+        SESSION_STATUS="STOPPED"
+    fi
+fi
+
 if [ "${SESSION_STATUS}" != "RUNNING" ]; then
-    echo "[+] 正在啟動 Waydroid Session..."
-    waydroid session start > /home/dinghonjay/.local/share/waydroid/session.log 2>&1 &
+    echo "[+] 正在啟動 Waydroid Session (WAYLAND_DISPLAY=${WAYLAND_DISPLAY})..."
+    WAYLAND_DISPLAY="${WAYLAND_DISPLAY}" waydroid session start > /home/dinghonjay/.local/share/waydroid/session.log 2>&1 &
     
     for i in $(seq 1 20); do
         sleep 1
@@ -82,11 +92,21 @@ else
     echo "[*] Waydroid Session 已在運行中。"
 fi
 
-# 8. 等待 Android 系統開機完成 (sys.boot_completed == 1)
+# 8. 取得 IP 並連接 ADB
+adb start-server >/dev/null 2>&1 || true
+sleep 1
+IP=$(grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" /var/lib/misc/dnsmasq.waydroid0.leases 2>/dev/null | tail -n 1 || true)
+if [ -z "${IP}" ]; then
+    IP="192.168.240.112"
+fi
+echo "[+] 連接 ADB 到 Waydroid IP: ${IP}:5555..."
+adb connect "${IP}:5555" || true
+
+# 9. 等待 Android 系統開機完成 (sys.boot_completed == 1)
 echo "[+] 等待 Android 系統開機完成..."
 BOOTED=0
 for i in $(seq 1 40); do
-    STATUS=$(waydroid shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+    STATUS=$(adb -s "${IP}:5555" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
     if [ "${STATUS}" = "1" ]; then
         BOOTED=1
         echo "[+] Android 系統已開機完畢！(耗時約 $((i * 2)) 秒)"
@@ -96,22 +116,26 @@ for i in $(seq 1 40); do
 done
 
 if [ "${BOOTED}" -ne 1 ]; then
-    echo "[!] 警告: 開機逾時，但將繼續嘗試連線 ADB 與開啟介面。"
-fi
-
-# 9. 取得 IP 並連接 ADB
-adb start-server >/dev/null 2>&1 || true
-sleep 1
-IP=$(grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" /var/lib/misc/dnsmasq.waydroid0.leases 2>/dev/null | tail -n 1 || true)
-if [ -n "${IP}" ]; then
-    echo "[+] 連接 ADB 到 Waydroid IP: ${IP}:5555..."
-    adb connect "${IP}:5555" || true
+    echo "[!] 警告: 開機逾時，但將繼續嘗試開啟介面。"
 fi
 adb devices
 
-# 10. 拉起 Android 完整桌面 UI
+# 10. 拉起 Android 完整桌面 UI (加入存活驗證與重試機制)
 echo "[+] 啟動 Waydroid 完整手機 UI..."
-waydroid show-full-ui >/dev/null 2>&1 &
+if ! pgrep -f "waydroid show-full-ui" > /dev/null; then
+    WAYLAND_DISPLAY="${WAYLAND_DISPLAY}" waydroid show-full-ui >/dev/null 2>&1 &
+    sleep 2
+    if ! pgrep -f "waydroid show-full-ui" > /dev/null; then
+        echo "[!] 重試拉起 Waydroid show-full-ui..."
+        WAYLAND_DISPLAY="${WAYLAND_DISPLAY}" waydroid show-full-ui >/dev/null 2>&1 &
+        sleep 1
+    fi
+fi
+if pgrep -f "waydroid show-full-ui" > /dev/null; then
+    echo "[+] Waydroid UI 視窗已成功附著於 Weston！"
+else
+    echo "[!] 警告: Waydroid UI 視窗尚未成功附著，Python Bot 啟動時將自動進行二次保活附著。"
+fi
 
 echo "=========================================="
 echo " Waydroid 環境已成功就緒！                "

@@ -55,6 +55,14 @@ class TelegramNotifier:
             logger.error(f"❌ Telegram 連線異常: {e}")
             return False
 
+    def notify(self, text: str) -> bool:
+        """Alias for send_message."""
+        return self.send_message(text)
+
+    def notify_error(self, message: str) -> bool:
+        """Alias for notify_error_alert with generic code."""
+        return self.notify_error_alert("SYSTEM_ERROR", message)
+
     def send_photo(self, photo_path: str, caption: str = "") -> bool:
         """Sends a photo file to Telegram chat with optional caption."""
         if not self.enabled:

@@ -122,13 +122,45 @@ def main():
     controller.launch_line(wait_seconds=4.0)
     controller.switch_to_chats_tab()
 
+    # Configuration for Watchdog & Preventive Maintenance
+    health_check_interval_sec = bot_cfg.get("health_check_interval_sec", 60.0)
+    preventive_restart_hours = bot_cfg.get("preventive_restart_hours", 24.0)
+    preventive_restart_sec = preventive_restart_hours * 3600.0 if preventive_restart_hours > 0 else 0
+
     processed_signatures = set()
     scan_count = 0
+    last_health_check_time = time.time()
+    last_preventive_restart_time = time.time()
 
     while True:
         try:
             scan_count += 1
             time.sleep(scan_interval)
+            now = time.time()
+
+            # [Layer 1 & 2] Real-time Health Check & Reactive Auto-Healing
+            if now - last_health_check_time >= health_check_interval_sec:
+                last_health_check_time = now
+                is_healthy, health_reason = controller.check_line_health()
+                if not is_healthy:
+                    alert_msg = f"⚠️ [Watchdog] 偵測到 LINE 異常假死: {health_reason}\n正在啟動主動自癒重啟..."
+                    logger.warning(alert_msg)
+                    notifier.notify(alert_msg)
+                    controller.restart_line(reason=health_reason, stop_wait=3.0, start_wait=8.0)
+                    time.sleep(2.0)
+                    continue
+
+                # Ensure Waydroid UI window remains actively attached to Weston
+                controller.ensure_waydroid_ui_attached()
+
+            # [Layer 3] Preventive Periodic Maintenance (Daily restart when idle)
+            if preventive_restart_sec > 0 and (now - last_preventive_restart_time >= preventive_restart_sec):
+                last_preventive_restart_time = now
+                maint_msg = f"🕒 [預防性維護] 距上次重啟已滿 {preventive_restart_hours} 小時，執行定期重啟維護..."
+                logger.info(maint_msg)
+                controller.restart_line(reason="預防性定期維護", stop_wait=3.0, start_wait=8.0)
+                time.sleep(2.0)
+                continue
 
             # Ensure we are on Chats tab
             controller.switch_to_chats_tab()
@@ -255,7 +287,14 @@ def main():
         except Exception as e:
             logger.error(f"循環例外錯誤: {e}", exc_info=True)
             try:
-                controller.back_to_chat_list()
+                is_h, r_fail = controller.check_line_health()
+                if not is_h:
+                    logger.warning(f"⚠️ [Watchdog] 異常處理中檢測到 LINE 假死: {r_fail}，啟動自癒重啟...")
+                    notifier.notify(f"⚠️ [Watchdog] 檢測到異常: {r_fail}，正在自動自癒重啟...")
+                    controller.restart_line(reason=r_fail, stop_wait=3.0, start_wait=8.0)
+                else:
+                    controller.ensure_connection()
+                    controller.back_to_chat_list()
             except Exception:
                 pass
             time.sleep(5.0)
